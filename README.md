@@ -36,7 +36,7 @@ npm install -g v-tunnel
 Set up your tunnel server:
 
 ```bash
-vtunnel-server
+vtunnel server
 ```
 
 Follow the interactive setup to:
@@ -49,13 +49,13 @@ Follow the interactive setup to:
 #### Login to server
 
 ```bash
-vtunnel login
+vtunnel client login
 ```
 
 #### Create a tunnel
 
 ```bash
-vtunnel create
+vtunnel client create
 ```
 
 Follow the prompts to create a tunnel with:
@@ -67,37 +67,37 @@ Follow the prompts to create a tunnel with:
 #### Start a tunnel
 
 ```bash
-vtunnel start
+vtunnel client start
 ```
 
 Your local service is now accessible through the tunnel!
 
 ## Client Commands
 
-| Command | Description |
-|---------|-------------|
-| `vtunnel login` | Log in to the tunnel server |
-| `vtunnel logout` | Log out from the tunnel server |
-| `vtunnel create` | Define a new tunnel |
-| `vtunnel list` | List all tunnels |
-| `vtunnel start` | Start a tunnel |
-| `vtunnel stop` | Stop a running tunnel |
-| `vtunnel status` | Show status of tunnels |
-| `vtunnel details` | Show details of a tunnel |
-| `vtunnel delete` | Delete a tunnel |
-| `vtunnel password` | Change your password |
-| `vtunnel --help` | Show help information |
+| Command                | Description |
+|------------------------|-------------|
+| `vtunnel client login` | Log in to the tunnel server |
+| `vtunnel client logout`       | Log out from the tunnel server |
+| `vtunnel client create`       | Define a new tunnel |
+| `vtunnel client list`         | List all tunnels |
+| `vtunnel client start`        | Start a tunnel |
+| `vtunnel client stop`         | Stop a running tunnel |
+| `vtunnel client status`       | Show status of tunnels |
+| `vtunnel client details`      | Show details of a tunnel |
+| `vtunnel client delete`       | Delete a tunnel |
+| `vtunnel client password`     | Change your password |
+| `vtunnel client --help`       | Show help information |
 
 ## Server Commands
 
-| Command | Description |
-|---------|-------------|
-| `vtunnel-server` | Start the tunnel server |
-| `vtunnel-server --port=9012` | Specify control server port |
-| `vtunnel-server --range-start=51200` | Set tunnel port range start |
-| `vtunnel-server --range-end=52200` | Set tunnel port range end |
-| `vtunnel-server --stats` | Display server stats periodically |
-| `vtunnel-server --help` | Show help information |
+| Command                              | Description |
+|--------------------------------------|-------------|
+| `vtunnel server`                     | Start the tunnel server |
+| `vtunnel server --port=9012`         | Specify control server port |
+| `vtunnel server --range-start=51200` | Set tunnel port range start |
+| `vtunnel server --range-end=52200`   | Set tunnel port range end |
+| `vtunnel server --stats`             | Display server stats periodically |
+| `vtunnel server --help`              | Show help information |
 
 ## How It Works
 
@@ -198,7 +198,7 @@ npm install -g v-tunnel
 Tünel sunucunuzu kurun:
 
 ```bash
-vtunnel-server
+vtunnel server
 ```
 
 Etkileşimli kurulumu takip ederek:
@@ -211,13 +211,13 @@ Etkileşimli kurulumu takip ederek:
 #### Sunucuya giriş yapma
 
 ```bash
-vtunnel login
+vtunnel client login
 ```
 
 #### Tünel oluşturma
 
 ```bash
-vtunnel create
+vtunnel client create
 ```
 
 Aşağıdaki bilgileri girerek bir tünel oluşturun:
@@ -229,7 +229,7 @@ Aşağıdaki bilgileri girerek bir tünel oluşturun:
 #### Tünel başlatma
 
 ```bash
-vtunnel start
+vtunnel client start
 ```
 
 Yerel servisiniz artık tünel üzerinden erişilebilir!
@@ -238,28 +238,28 @@ Yerel servisiniz artık tünel üzerinden erişilebilir!
 
 | Komut | Açıklama |
 |---------|-------------|
-| `vtunnel login` | Tünel sunucusuna giriş yap |
-| `vtunnel logout` | Tünel sunucusundan çıkış yap |
-| `vtunnel create` | Yeni bir tünel tanımla |
-| `vtunnel list` | Tüm tünelleri listele |
-| `vtunnel start` | Bir tünel başlat |
-| `vtunnel stop` | Çalışan bir tüneli durdur |
-| `vtunnel status` | Tünellerin durumunu göster |
-| `vtunnel details` | Bir tünelin detaylarını göster |
-| `vtunnel delete` | Bir tüneli sil |
-| `vtunnel password` | Şifrenizi değiştirin |
-| `vtunnel --help` | Yardım bilgisini göster |
+| `vtunnel client login` | Tünel sunucusuna giriş yap |
+| `vtunnel client logout` | Tünel sunucusundan çıkış yap |
+| `vtunnel client create` | Yeni bir tünel tanımla |
+| `vtunnel client list` | Tüm tünelleri listele |
+| `vtunnel client start` | Bir tünel başlat |
+| `vtunnel client stop` | Çalışan bir tüneli durdur |
+| `vtunnel client status` | Tünellerin durumunu göster |
+| `vtunnel client details` | Bir tünelin detaylarını göster |
+| `vtunnel client delete` | Bir tüneli sil |
+| `vtunnel client password` | Şifrenizi değiştirin |
+| `vtunnel client --help` | Yardım bilgisini göster |
 
 ## Sunucu Komutları
 
-| Komut | Açıklama |
-|---------|-------------|
-| `vtunnel-server` | Tünel sunucusunu başlat |
-| `vtunnel-server --port=9012` | Kontrol sunucusu portunu belirt |
-| `vtunnel-server --range-start=51200` | Tünel port aralığı başlangıcını ayarla |
-| `vtunnel-server --range-end=52200` | Tünel port aralığı sonunu ayarla |
-| `vtunnel-server --stats` | Sunucu istatistiklerini periyodik olarak göster |
-| `vtunnel-server --help` | Yardım bilgisini göster |
+| Komut                                | Açıklama |
+|--------------------------------------|-------------|
+| `vtunnel server`                     | Tünel sunucusunu başlat |
+| `vtunnel server --port=9012`         | Kontrol sunucusu portunu belirt |
+| `vtunnel server --range-start=51200` | Tünel port aralığı başlangıcını ayarla |
+| `vtunnel server --range-end=52200`   | Tünel port aralığı sonunu ayarla |
+| `vtunnel server --stats`             | Sunucu istatistiklerini periyodik olarak göster |
+| `vtunnel server --help`              | Yardım bilgisini göster |
 
 ## Nasıl Çalışır
 
