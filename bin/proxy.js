@@ -7,757 +7,1015 @@
  * like Ngrok, Cloudflare Tunnel, and others.
  *
  * @file        proxy.js
- * @description Enhanced Tunnel Routing Proxy for provide domain host
+ * @description Enhanced Tunnel Routing Proxy for wildcard host
  * @author      Cengiz AKCAN <me@cengizakcan.com>
  * @copyright   Copyright (c) 2025, Cengiz AKCAN
  * @license     MIT
- * @version     1.0.9
+ * @version     1.1.0
  * @link        https://github.com/wwwakcan/V-Tunnel
  *
  * This software is released under the MIT License.
  * https://opensource.org/licenses/MIT
  */
 
-// proxy.js
-const httpProxy = require('http-proxy');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const inquirer = require('inquirer');
-const Table = require('cli-table3');
 const colors = require('colors/safe');
-const { spawn, execSync } = require('child_process');
-
-// Define config directory
-const CONFIG_DIR = path.join(__dirname, '.vtunnel-proxy');
-const DEFAULT_CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
-const BACKGROUND_INFO_PATH = path.join(CONFIG_DIR, 'background.json');
-const LOG_OUT_PATH = path.join(CONFIG_DIR, 'proxy-output.log');
-const LOG_ERR_PATH = path.join(CONFIG_DIR, 'proxy-error.log');
-
-// Parse command line arguments using commands instead of options
-const argv = yargs(hideBin(process.argv))
-    .command('setup', 'Initialize configuration file interactively', {}, (argv) => {
-        argv.doSetup = true;
-    })
-    .command('show', 'Show current configuration', {}, (argv) => {
-        argv.doShow = true;
-    })
-    .command('background [action]', 'Run proxy server in background mode', (yargs) => {
-        return yargs
-            .positional('action', {
-                describe: 'Background action: start, stop, or status',
-                type: 'string',
-                choices: ['start', 'stop', 'status'],
-                demandOption: true
-            });
-    }, (argv) => {
-        argv.background = true;
-    })
-    .option('config', {
-        alias: 'c',
-        description: 'Path to config file',
-        type: 'string',
-        default: DEFAULT_CONFIG_PATH
-    })
-    .option('verbose', {
-        alias: 'v',
-        description: 'Enable verbose logging',
-        type: 'boolean'
-    })
-    .help()
-    .alias('help', 'h')
-    .version('1.0.0')
-    .alias('version', 'V')
-    .strict()
-    .argv;
-
-// Function to create config.json through interactive prompts
-async function createConfigInteractively() {
-    console.log(colors.cyan("\n🔧 Dynamic Proxy with SSL - Configuration Setup 🔧\n"));
-
-    const answers = await inquirer.prompt([
-        {
-            type: 'input',
-            name: 'mainDomain',
-            message: 'Enter your main domain:',
-            default: 'connect.vobo.cloud',
-            validate: input => input.trim() !== '' ? true : 'Domain cannot be empty'
-        },
-        {
-            type: 'input',
-            name: 'dynamicDomainFormat',
-            message: 'Enter dynamic domain format (subdomain pattern):',
-            default: (answers) => `*.${answers.mainDomain || 'connect.vobo.cloud'}`,
-            validate: input => input.includes('*') ? true : 'Format should include a wildcard (*)'
-        },
-        {
-            type: 'list',
-            name: 'extractRule',
-            message: 'Select how to extract port from subdomain:',
-            choices: [
-                { name: 'Prefix (e.g., 8080.domain.com → port 8080)', value: 'prefix' },
-                { name: 'Custom regex pattern', value: 'regex' }
-            ],
-            default: 'prefix'
-        },
-        {
-            type: 'input',
-            name: 'dynamicDomainPattern',
-            message: 'Enter regex pattern with capture group for port:',
-            default: (answers) => `^(\\d+)\\.${(answers.mainDomain || 'connect.vobo.cloud').replace(/\./g, '\\.')}`,
-            when: answers => answers.extractRule === 'regex',
-            validate: input => {
-                try {
-                    new RegExp(input);
-                    if (!input.includes('(') || !input.includes(')')) {
-                        return 'Pattern must include a capture group ()';
-                    }
-                    return true;
-                } catch (e) {
-                    return 'Invalid regex pattern';
-                }
-            }
-        },
-        {
-            type: 'input',
-            name: 'targetIP',
-            message: 'Enter target IP to forward requests to:',
-            default: '127.0.0.1'
-        },
-        {
-            type: 'input',
-            name: 'adminEmail',
-            message: 'Enter admin email (for SSL certificates):',
-            default: 'admin@example.com',
-            validate: input => {
-                const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input);
-                return valid ? true : 'Please enter a valid email address';
-            }
-        },
-        {
-            type: 'number',
-            name: 'httpPort',
-            message: 'Enter HTTP port:',
-            default: 80,
-            validate: input => {
-                if (isNaN(input) || input < 1 || input > 65535) {
-                    return 'Port must be between 1-65535';
-                }
-                return true;
-            }
-        },
-        {
-            type: 'number',
-            name: 'httpsPort',
-            message: 'Enter HTTPS port:',
-            default: 443,
-            validate: input => {
-                if (isNaN(input) || input < 1 || input > 65535) {
-                    return 'Port must be between 1-65535';
-                }
-                return true;
-            }
-        },
-        {
-            type: 'confirm',
-            name: 'confirmSave',
-            message: 'Save this configuration?',
-            default: true
-        }
-    ]);
-
-    if (!answers.confirmSave) {
-        console.log(colors.yellow('\nConfiguration not saved. Exiting...'));
-        process.exit(0);
-    }
-
-    // Create config object
-    const config = {
-        mainDomain: answers.mainDomain,
-        dynamicDomainFormat: answers.dynamicDomainFormat,
-        extractRule: answers.extractRule
-    };
-
-    // Add regex pattern if using custom regex
-    if (answers.extractRule === 'regex' && answers.dynamicDomainPattern) {
-        config.dynamicDomainPattern = answers.dynamicDomainPattern;
-    }
-
-    // Add remaining config options
-    Object.assign(config, {
-        targetIP: answers.targetIP,
-        adminEmail: answers.adminEmail,
-        httpPort: answers.httpPort,
-        httpsPort: answers.httpsPort
-    });
-
-    // Ensure config directory exists
-    if (!fs.existsSync(CONFIG_DIR)) {
-        fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    }
-
-    // Write config to file
-    fs.writeFileSync(DEFAULT_CONFIG_PATH, JSON.stringify(config, null, 2));
-
-    console.log(colors.green(`\n✓ Configuration saved to ${DEFAULT_CONFIG_PATH}\n`));
-    displayConfig(config);
-
-    return config;
-}
-
-// Display current configuration
-function displayConfig(config) {
-    const table = new Table({
-        head: [colors.cyan('Setting'), colors.cyan('Value')],
-        colWidths: [30, 50]
-    });
-
-    for (const [key, value] of Object.entries(config)) {
-        table.push([colors.yellow(key), colors.green(value.toString())]);
-    }
-
-    console.log(table.toString());
-}
-
-// Create default config if not exists
-function createDefaultConfig() {
-    const defaultConfig = {
-        mainDomain: 'connect.vobo.cloud',
-        dynamicDomainFormat: '*.connect.vobo.cloud',
-        extractRule: 'prefix',
-        targetIP: '127.0.0.1',
-        adminEmail: 'admin@example.com',
-        httpPort: 80,
-        httpsPort: 443
-    };
-
-    // Ensure config directory exists
-    if (!fs.existsSync(CONFIG_DIR)) {
-        fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    }
-
-    // Write default config
-    fs.writeFileSync(DEFAULT_CONFIG_PATH, JSON.stringify(defaultConfig, null, 2));
-    console.log(colors.yellow(`Created default configuration at ${DEFAULT_CONFIG_PATH}`));
-    console.log(colors.yellow('Please edit this file with your settings or run with "setup" command to configure interactively'));
-
-    return defaultConfig;
-}
-
-// Load or create configuration
-async function loadOrCreateConfig() {
-    // Show configuration if requested
-    if (argv.doShow) {
-        try {
-            if (!fs.existsSync(DEFAULT_CONFIG_PATH)) {
-                console.error(colors.red(`Configuration file not found at ${DEFAULT_CONFIG_PATH}`));
-                process.exit(1);
-            }
-
-            const config = JSON.parse(fs.readFileSync(DEFAULT_CONFIG_PATH, 'utf8'));
-            console.log(colors.cyan("\n📋 Current Configuration 📋\n"));
-            displayConfig(config);
-            process.exit(0);
-        } catch (err) {
-            console.error(colors.red(`Error loading configuration: ${err.message}`));
-            process.exit(1);
-        }
-    }
-
-    // Initialize configuration if requested
-    if (argv.doSetup) {
-        return await createConfigInteractively();
-    }
-
-    try {
-        // Check if config file exists
-        if (fs.existsSync(DEFAULT_CONFIG_PATH)) {
-            const config = JSON.parse(fs.readFileSync(DEFAULT_CONFIG_PATH, 'utf8'));
-            if (argv.verbose) {
-                console.log(colors.green(`Configuration loaded from ${DEFAULT_CONFIG_PATH}`));
-                displayConfig(config);
-            } else {
-                console.log(colors.green(`Configuration loaded successfully from ${DEFAULT_CONFIG_PATH}`));
-            }
-            return config;
-        } else {
-            // Create default config
-            return createDefaultConfig();
-        }
-    } catch (err) {
-        console.error(colors.red(`Error with configuration file: ${err.message}`));
-        return createDefaultConfig();
-    }
-}
-
-// Check if process is running
-function isProcessRunning(pid) {
-    try {
-        process.kill(pid, 0);
-        return true;
-    } catch (e) {
-        return false;
-    }
-}
-
-// Get process name by PID
-function getProcessName(pid) {
-    try {
-        if (process.platform === 'win32') {
-            const result = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`).toString();
-            const match = /"([^"]+)"/.exec(result);
-            return match ? match[1] : 'Unknown';
-        } else {
-            return execSync(`ps -p ${pid} -o comm=`).toString().trim();
-        }
-    } catch (e) {
-        return 'Unknown';
-    }
-}
-
-// Start process in background
-function startBackgroundProcess() {
-    // Ensure config directory exists
-    if (!fs.existsSync(CONFIG_DIR)) {
-        fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    }
-
-    // Check if already running
-    if (fs.existsSync(BACKGROUND_INFO_PATH)) {
-        try {
-            const info = JSON.parse(fs.readFileSync(BACKGROUND_INFO_PATH, 'utf8'));
-            if (isProcessRunning(info.pid)) {
-                const processName = getProcessName(info.pid);
-                console.log(colors.yellow(`✓ Proxy server is already running (PID: ${info.pid}, Process: ${processName})`));
-                console.log(colors.yellow(`  Started: ${info.startTime}`));
-                return true;
-            }
-        } catch (err) {
-            // Ignore error, will start a new process
-        }
-    }
-
-    // Get the path to the current script
-    const scriptPath = process.argv[1];
-
-    // Convert to absolute path if needed
-    const fullScriptPath = path.isAbsolute(scriptPath)
-        ? scriptPath
-        : path.join(process.cwd(), scriptPath);
-
-    // Create background script
-    const startScript = path.join(CONFIG_DIR, 'start-proxy.js');
-
-    // Create a small script that will be used to start the proxy
-    const scriptContent = `
-// Auto-generated start script for VTunnel Proxy
-const { spawn } = require('child_process');
+const { exec, execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+const http = require('http');
+const { createProxyServer } = require('http-proxy');
+const net = require('net');
+const cluster = require('cluster');
 
-// Open log files
-const out = fs.openSync('${LOG_OUT_PATH}', 'a');
-const err = fs.openSync('${LOG_ERR_PATH}', 'a');
+// Sabitler
+const PROXY_DIR = path.join(process.cwd(), '.vtunnel-proxy');
+const SSL_DIR = path.join(PROXY_DIR, 'ssl');
+const BACKGROUND_FILE = path.join(PROXY_DIR, 'background.json');
+const CERTBOT_DIR = path.join(PROXY_DIR, 'certbot');
+const CONFIG_FILE = path.join(PROXY_DIR, 'config.json');
+const LOG_FILE = path.join(PROXY_DIR, 'proxy.log');
+const ERROR_LOG_FILE = path.join(PROXY_DIR, 'error.log');
 
-// Start the main proxy process
-const child = spawn('node', ['${fullScriptPath.replace(/\\/g, '\\\\')}'], {
-    detached: true,
-    stdio: ['ignore', out, err]
-});
+// CPU sayısı (performans için)
+const NUM_CPUS = require('os').cpus().length;
 
-// Disconnect from parent
-child.unref();
+// Subdomain cache (performans optimizasyonu)
+const domainCache = new Map();
+const HOST_CACHE_TTL = 60 * 1000; // 1 dakika cache süresi
 
-// Write the PID to a file so the parent process can read it
-fs.writeFileSync('${path.join(CONFIG_DIR, 'proxy.pid')}', child.pid.toString());
+// CLI renkli loglar için yardımcı fonksiyonlar
+const log = {
+    info: (text) => console.log(colors.blue(text)),
+    success: (text) => console.log(colors.green('✓ ' + text)),
+    warning: (text) => console.log(colors.yellow('⚠ ' + text)),
+    error: (text) => console.log(colors.red('✗ ' + text)),
+    title: (text) => console.log(colors.bold.cyan('\n' + text + '\n' + '='.repeat(text.length) + '\n'))
+};
 
-// Exit this process
-process.exit(0);
-    `;
+// Log fonksiyonu - dosyaya yazma kontrolü ile
+function writeLog(message, isError = false) {
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] ${message}\n`;
 
-    fs.writeFileSync(startScript, scriptContent);
+    // Worker process değilse veya master ise, konsola da yaz
+    if (!cluster.isWorker || cluster.isMaster) {
+        console.log(isError ? colors.red(message) : message);
+    }
 
+    // Asenkron dosya yazma işlemi (performans için)
+    fs.appendFile(
+        isError ? ERROR_LOG_FILE : LOG_FILE,
+        logEntry,
+        { flag: 'a' },
+        (err) => {
+            if (err && !isError) {
+                console.error(`Log yazma hatası: ${err.message}`);
+            }
+        }
+    );
+}
+
+// Dizin yapısını oluştur
+async function setupDirectories() {
+    // mkdirp API değişmiş olabilir, fs.mkdir kullanarak oluştur
+    fs.mkdirSync(SSL_DIR, { recursive: true });
+    fs.mkdirSync(CERTBOT_DIR, { recursive: true });
+
+    // Log dosyaları için dizin kontrolü
     try {
-        // Execute the start script
-        const result = execSync(`node "${startScript}"`, {
-            stdio: ['ignore', 'pipe', 'pipe']
+        fs.accessSync(path.dirname(LOG_FILE), fs.constants.W_OK);
+    } catch (err) {
+        fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    }
+}
+
+// Port erişilebilirliğini kontrol et (timeout ile optimize edildi)
+function isPortAccessible(port, timeout = 500) {
+    return new Promise((resolve) => {
+        const testSocket = new net.Socket();
+
+        testSocket.setTimeout(timeout);
+
+        testSocket.on('error', () => {
+            testSocket.destroy();
+            resolve(false);
         });
 
-        // Wait a bit for the child process to start and write its PID
-        setTimeout(() => {}, 1000);
-
-        // Read the PID from the file
-        const pidFile = path.join(CONFIG_DIR, 'proxy.pid');
-        if (fs.existsSync(pidFile)) {
-            const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
-
-            // Save background process info
-            const backgroundInfo = {
-                pid: pid,
-                startTime: new Date().toISOString(),
-                command: `node ${fullScriptPath}`,
-                logsPath: CONFIG_DIR
-            };
-
-            fs.writeFileSync(BACKGROUND_INFO_PATH, JSON.stringify(backgroundInfo, null, 2));
-            console.log(colors.green(`✓ Proxy server started in background mode (PID: ${pid})`));
-            console.log(colors.green(`  Logs available at:`));
-            console.log(colors.gray(`    Output: ${LOG_OUT_PATH}`));
-            console.log(colors.gray(`    Errors: ${LOG_ERR_PATH}`));
-
-            // Clean up the PID file
-            try { fs.unlinkSync(pidFile); } catch(e) {}
-
-            return true;
-        } else {
-            console.error(colors.red('Failed to start background process: PID file not created'));
-            return false;
-        }
-    } catch (error) {
-        console.error(colors.red(`Failed to start background process: ${error.message}`));
-        if (error.stdout) console.error(colors.gray(error.stdout.toString()));
-        if (error.stderr) console.error(colors.red(error.stderr.toString()));
-        return false;
-    }
-}
-
-// Handle background service commands
-function handleBackgroundCommands() {
-    if (!argv.background) return false;
-
-    const action = argv.action;
-
-    // Background start command
-    if (action === 'start') {
-        return startBackgroundProcess();
-    }
-
-    // Background stop command
-    if (action === 'stop') {
-        if (!fs.existsSync(BACKGROUND_INFO_PATH)) {
-            console.log(colors.yellow('✗ No background proxy server found'));
-            return true;
-        }
-
-        try {
-            const info = JSON.parse(fs.readFileSync(BACKGROUND_INFO_PATH, 'utf8'));
-            if (isProcessRunning(info.pid)) {
-                process.kill(info.pid);
-                console.log(colors.green(`✓ Proxy server stopped (PID: ${info.pid})`));
-            } else {
-                console.log(colors.yellow(`✗ Proxy server is not running (previous PID: ${info.pid})`));
-            }
-            fs.unlinkSync(BACKGROUND_INFO_PATH);
-            return true;
-        } catch (err) {
-            console.error(colors.red(`Error stopping background server: ${err.message}`));
-            return true;
-        }
-    }
-
-    // Background status command
-    if (action === 'status') {
-        if (!fs.existsSync(BACKGROUND_INFO_PATH)) {
-            console.log(colors.yellow('✗ No background proxy server found'));
-            return true;
-        }
-
-        try {
-            const info = JSON.parse(fs.readFileSync(BACKGROUND_INFO_PATH, 'utf8'));
-            if (isProcessRunning(info.pid)) {
-                const processName = getProcessName(info.pid);
-
-                console.log(colors.green(`✓ Proxy server is running`));
-                console.log(colors.gray(`  PID: ${info.pid}`));
-                console.log(colors.gray(`  Process: ${processName}`));
-                console.log(colors.gray(`  Started: ${info.startTime}`));
-                console.log(colors.gray(`  Command: ${info.command}`));
-                console.log(colors.gray(`  Logs: ${info.logsPath}`));
-
-                // Show recent logs
-                try {
-                    if (fs.existsSync(LOG_OUT_PATH)) {
-                        const stats = fs.statSync(LOG_OUT_PATH);
-                        const size = stats.size;
-                        const maxBytes = 500; // Show last 500 bytes
-
-                        console.log(colors.gray(`\n  Recent logs:`));
-
-                        const fd = fs.openSync(LOG_OUT_PATH, 'r');
-                        const buffer = Buffer.alloc(Math.min(size, maxBytes));
-                        fs.readSync(fd, buffer, 0, buffer.length, Math.max(0, size - maxBytes));
-                        fs.closeSync(fd);
-
-                        const lines = buffer.toString().split('\n').filter(line => line.trim());
-                        const lastLines = lines.slice(-5); // Show last 5 lines
-
-                        if (lastLines.length > 0) {
-                            lastLines.forEach(line => {
-                                console.log(colors.gray(`    ${line}`));
-                            });
-                        } else {
-                            console.log(colors.gray(`    (No log output yet)`));
-                        }
-                    }
-                } catch (e) {
-                    // Ignore log reading errors
-                }
-            } else {
-                console.log(colors.red(`✗ Proxy server is not running (previous PID: ${info.pid})`));
-                console.log(colors.gray(`  Last started: ${info.startTime}`));
-            }
-            return true;
-        } catch (err) {
-            console.error(colors.red(`Error checking status: ${err.message}`));
-            return true;
-        }
-    }
-
-    return false;
-}
-
-// Create a proxy server instance
-const proxy = httpProxy.createProxyServer({});
-
-// Handle proxy errors
-proxy.on('error', function(err, req, res) {
-    console.error(colors.red(`Proxy error: ${err.message}`));
-    if (res.writeHead) {
-        res.writeHead(500, {
-            'Content-Type': 'text/plain'
+        testSocket.on('timeout', () => {
+            testSocket.destroy();
+            resolve(false);
         });
-        res.end('Proxy error');
-    }
-});
 
-// Create a function to extract the port or identifier from the hostname
-function extractIdentifier(hostname, config) {
-    if (!hostname) return null;
-
-    // Get the main domain and remove any periods from the beginning
-    const mainDomain = config.mainDomain.replace(/^\./, '');
-
-    // If extractRule is "prefix", extract the portion before the domain
-    if (config.extractRule === "prefix") {
-        const pattern = new RegExp(`^(.+)\\.${mainDomain.replace(/\./g, '\\.')}$`);
-        const match = hostname.match(pattern);
-        return match ? match[1] : null;
-    }
-
-    // If dynamicDomainPattern is provided directly, use it
-    if (config.dynamicDomainPattern) {
-        const regex = new RegExp(config.dynamicDomainPattern);
-        const match = hostname.match(regex);
-        return match && match[1] ? match[1] : null;
-    }
-
-    // Default: extract numeric port from hostname
-    const pattern = new RegExp(`^(\\d+)\\.${mainDomain.replace(/\./g, '\\.')}$`);
-    const match = hostname.match(pattern);
-    return match ? match[1] : null;
+        testSocket.connect(port, '127.0.0.1', () => {
+            testSocket.destroy();
+            resolve(true);
+        });
+    });
 }
 
-// Create request handler function for both HTTP and HTTPS
-function createRequestHandler(config) {
-    return function handleRequest(req, res) {
-        // Get the host from the request headers
-        const host = req.headers.host;
+// Let's Encrypt için gerekli dosyaları oluştur
+async function createCertbotCommand(domain, wildcardDomain) {
+    log.title('Let\'s Encrypt Wildcard SSL Sertifikası Oluşturma');
+    log.info('DNS-01 doğrulaması için TXT kaydı oluşturmanız gerekecek.');
 
-        // Extract identifier (port) from subdomain
-        const identifier = extractIdentifier(host, config);
+    // Certbot komutu oluştur
+    const certbotCommand = `certbot certonly --manual --preferred-challenges dns --server https://acme-v02.api.letsencrypt.org/directory -d "${wildcardDomain}" -d "${domain}" --cert-name "${domain}" --config-dir "${CERTBOT_DIR}" --work-dir "${CERTBOT_DIR}" --logs-dir "${CERTBOT_DIR}/logs"`;
 
-        // If we couldn't extract an identifier, respond with an error
-        if (!identifier) {
-            console.error(colors.yellow(`Invalid host format: ${host}`));
-            const expectedFormat = config.dynamicDomainFormat
-                ? config.dynamicDomainFormat.replace('*', '12345')
-                : `12345.${config.mainDomain}`;
-            res.writeHead(400, { 'Content-Type': 'text/plain' });
-            res.end(`Invalid host: Expected format like ${expectedFormat}`);
-            return;
-        }
+    return certbotCommand;
+}
 
-        // Log the request
-        if (argv.verbose) {
-            console.log(colors.gray(`Request: ${req.method} ${req.url} from ${req.socket.remoteAddress}`));
-            console.log(colors.gray(`Forwarding ${host} (port: ${identifier}) → ${config.targetIP}:${identifier}`));
-        }
+// SSL sertifikalarını kopyala
+function copySSLFiles(domain) {
+    const srcDir = path.join(CERTBOT_DIR, 'live', domain);
+    const destDir = path.join(SSL_DIR, domain);
 
-        // Target where we're forwarding the request to
-        const target = `http://${config.targetIP}:${identifier}`;
+    // Certbot dizini kontrol et
+    if (!fs.existsSync(srcDir)) {
+        throw new Error(`Certbot sertifika dizini bulunamadı: ${srcDir}`);
+    }
 
-        // Forward the request to the target
-        proxy.web(req, res, { target });
+    // Gerekli sertifika dosyalarının varlığını kontrol et
+    const fullchainPath = path.join(srcDir, 'fullchain.pem');
+    const privkeyPath = path.join(srcDir, 'privkey.pem');
+
+    if (!fs.existsSync(fullchainPath)) {
+        throw new Error(`SSL sertifikası bulunamadı: ${fullchainPath}`);
+    }
+
+    if (!fs.existsSync(privkeyPath)) {
+        throw new Error(`SSL özel anahtarı bulunamadı: ${privkeyPath}`);
+    }
+
+    // Hedef dizini oluştur
+    if (!fs.existsSync(destDir)) {
+        fs.mkdirSync(destDir, { recursive: true });
+    }
+
+    // Sertifika dosyalarını kopyala
+    fs.copyFileSync(fullchainPath, path.join(destDir, 'fullchain.pem'));
+    fs.copyFileSync(privkeyPath, path.join(destDir, 'privkey.pem'));
+
+    log.success(`SSL sertifikaları ${colors.cyan(destDir)} dizinine kopyalandı.`);
+    return {
+        cert: path.join(destDir, 'fullchain.pem'),
+        key: path.join(destDir, 'privkey.pem')
     };
 }
 
-// Create initial site for Greenlock
-function setupGreenlock(config, greenlockDir) {
-    // Create a basic site configuration file
-    const siteFile = path.join(greenlockDir, 'config.json');
+// Arkaplanda çalıştırılan proxy'nin durumunu kontrol et
+function checkProxyStatus() {
+    if (!fs.existsSync(BACKGROUND_FILE)) {
+        return { running: false };
+    }
 
     try {
-        // Create a minimal Greenlock config if it doesn't exist
-        if (!fs.existsSync(siteFile)) {
-            const greenlockConfig = {
-                sites: [
-                    {
-                        subject: config.mainDomain,
-                        altnames: [config.mainDomain, `*.${config.mainDomain}`]
-                    }
-                ],
-                defaults: {
-                    challenges: {
-                        "http-01": {
-                            module: "acme-http-01-standalone"
-                        }
-                    },
-                    renewOffset: "-45d",
-                    renewStagger: "3d",
-                    accountKeyType: "EC-P256",
-                    serverKeyType: "RSA-2048",
-                    subscriberEmail: config.adminEmail
-                }
-            };
+        const status = JSON.parse(fs.readFileSync(BACKGROUND_FILE, 'utf8'));
 
-            fs.writeFileSync(siteFile, JSON.stringify(greenlockConfig, null, 2));
+        // PID hala aktif mi kontrol et
+        if (status.pid) {
+            try {
+                // PID var mı diye kontrol et (UNIX/Linux)
+                process.kill(status.pid, 0);
+                return { ...status, running: true };
+            } catch (err) {
+                // PID geçersiz veya process ölmüş
+                return { ...status, running: false };
+            }
         }
+
+        return { ...status, running: false };
     } catch (err) {
-        console.warn(colors.yellow(`Note: Could not create Greenlock configuration: ${err.message}`));
+        return { running: false };
     }
 }
 
-// Intercept console.log to filter Greenlock warnings
-const originalConsoleLog = console.log;
-const originalConsoleWarn = console.warn;
+// Proxy durumunu kaydet
+function saveProxyStatus(status) {
+    fs.writeFileSync(BACKGROUND_FILE, JSON.stringify(status, null, 2), 'utf8');
+}
 
-// Override console.log to filter out specific Greenlock messages
-console.log = function() {
-    const args = Array.from(arguments);
-    const msgStr = args.join(' ');
+// Konfigürasyon kaydet
+function saveConfig(config) {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+}
 
-    // Skip specific Greenlock warnings and messages
-    if (msgStr.includes('Warning: `find({})` returned 0 sites') ||
-        msgStr.includes('Does `@greenlock/manager` implement `find({})`') ||
-        msgStr.includes('Did you add sites?') ||
-        msgStr.includes('npx greenlock add')) {
-        return;
+// Konfigürasyon yükle
+function loadConfig() {
+    if (!fs.existsSync(CONFIG_FILE)) {
+        return null;
     }
 
-    originalConsoleLog.apply(console, args);
-};
-
-// Override console.warn similarly
-console.warn = function() {
-    const args = Array.from(arguments);
-    const msgStr = args.join(' ');
-
-    // Skip specific Greenlock warnings
-    if (msgStr.includes('Warning: `find({})` returned 0 sites') ||
-        msgStr.includes('Does `@greenlock/manager` implement `find({})`') ||
-        msgStr.includes('Did you add sites?') ||
-        msgStr.includes('npx greenlock add')) {
-        return;
+    try {
+        return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    } catch (err) {
+        return null;
     }
+}
 
-    originalConsoleWarn.apply(console, args);
-};
+// Setup komutu - Kurulum işlemi
+async function setupCommand(argv) {
+    try {
+        log.title('Wildcard SSL Proxy Kurulumu');
 
-// Main function to start the proxy server
-async function startProxyServer() {
-    // Process background mode commands if provided
-    if (argv.background) {
-        const handled = handleBackgroundCommands();
-        if (handled) {
+        // Dizin yapısını oluştur
+        await setupDirectories();
+
+        // Gerekli paketlerin kurulu olup olmadığını kontrol et
+        log.info('Gerekli bağımlılıkları kontrol ediyorum...');
+
+        try {
+            execSync('certbot --version', { stdio: 'ignore' });
+            log.success('Certbot kurulu.');
+        } catch (err) {
+            log.error('Certbot kurulu değil! Lütfen yükleyin:');
+            log.info('Ubuntu/Debian: sudo apt-get install certbot');
+            log.info('CentOS/RHEL: sudo yum install certbot');
+            log.info('macOS: brew install certbot');
             return;
         }
-    }
 
-    // Check if we're running from the correct directory with package.json
-    const packagePath = path.join(__dirname, 'package.json');
-    if (!fs.existsSync(packagePath)) {
-        console.warn(colors.yellow('\n⚠️  package.json not found in the current directory'));
-        console.warn(colors.yellow('   Creating a minimal package.json file for greenlock'));
+        // Ana domain bilgisini al
+        let domain = argv.domain;
 
-        // Create a minimal package.json file
-        const packageJson = {
-            name: "vtunnel-proxy",
-            version: "1.0.0",
-            description: "Dynamic proxy server with automatic SSL certificate management"
+        if (!domain) {
+            const answer = await inquirer.prompt([{
+                type: 'input',
+                name: 'domain',
+                message: 'Ana domain adını girin:',
+                default: 'connect.vobo.cloud',
+                validate: input => input.length > 0 ? true : 'Domain adı boş olamaz'
+            }]);
+            domain = answer.domain;
+        }
+
+        // Wildcard subdomain bilgisini oluştur
+        const wildcardDomain = `*.${domain}`;
+        log.info(`Wildcard domain: ${wildcardDomain}`);
+
+        // Konfigürasyon kaydet
+        const config = {
+            domain,
+            wildcardDomain,
+            usePortBasedSubdomains: true, // Port temelli subdomain kullanımını belirt
+            defaultPort: 0, // Spesifik bir default port yoksa 0
+            maxWorkers: Math.max(1, NUM_CPUS - 1), // İşlemci sayısı - 1 (en az 1)
+            proxyOptions: {
+                xfwd: true, // X-Forwarded-For başlıklarını geçir
+                secure: false, // SSL sertifikası doğrulamasını atla (iç ağda)
+                changeOrigin: true, // Origin başlığını değiştir
+                autoRewrite: true, // URL'leri otomatik yeniden yaz
+                followRedirects: true, // Yönlendirmeleri takip et
+                proxyTimeout: 30000, // 30 saniye zaman aşımı
+                timeout: 30000
+            }
         };
 
-        fs.writeFileSync(packagePath, JSON.stringify(packageJson, null, 2));
-        console.warn(colors.green('✓ Created package.json\n'));
-    }
+        // Default port belirleme seçeneği ekle
+        const defaultPortAnswer = await inquirer.prompt([{
+            type: 'confirm',
+            name: 'useDefaultPort',
+            message: 'Ana domain için özel bir port yönlendirmesi kullanmak istiyor musunuz?',
+            default: false
+        }]);
 
-    // Load the configuration
-    const config = await loadOrCreateConfig();
+        if (defaultPortAnswer.useDefaultPort) {
+            const portAnswer = await inquirer.prompt([{
+                type: 'input',
+                name: 'defaultPort',
+                message: 'Ana domain için hedef portu girin:',
+                validate: input => {
+                    const port = parseInt(input, 10);
+                    if (isNaN(port) || port < 1 || port > 65535) {
+                        return 'Geçerli bir port numarası girin (1-65535)';
+                    }
+                    return true;
+                },
+                filter: input => parseInt(input, 10)
+            }]);
 
-    // Create directory for Greenlock configuration
-    const greenlockDir = path.join(CONFIG_DIR, 'greenlock');
-    if (!fs.existsSync(greenlockDir)) {
-        fs.mkdirSync(greenlockDir, { recursive: true });
-    }
-
-    // Setup initial Greenlock configuration
-    setupGreenlock(config, greenlockDir);
-
-    // Prepare the domain list for SSL
-    const domains = [config.mainDomain];
-    if (config.dynamicDomainFormat && config.dynamicDomainFormat.includes('*')) {
-        domains.push(`*.${config.mainDomain}`);
-    } else {
-        domains.push(`*.${config.mainDomain}`);
-    }
-
-    // Create the request handler with the loaded configuration
-    const handleRequest = createRequestHandler(config);
-
-    // Import and initialize Greenlock for SSL/HTTPS
-    require('greenlock-express')
-        .init({
-            packageRoot: __dirname,
-            configDir: greenlockDir,
-            maintainerEmail: config.adminEmail || process.env.EMAIL,
-            cluster: false,
-            packageAgent: `vtunnel-proxy/1.0.0`,
-            notify: (event, details) => {
-                if (event === 'error' && !String(details).includes('find({})')) {
-                    console.error(colors.red(`Greenlock SSL error: ${details}`));
-                }
+            // Port erişilebilir mi kontrol et
+            const isAccessible = await isPortAccessible(portAnswer.defaultPort);
+            if (!isAccessible) {
+                log.warning(`Port ${portAnswer.defaultPort} erişilebilir değil. Yine de devam edilecek.`);
             }
-        })
-        .serve(handleRequest, {
-            // Handle HTTP-01 challenge requests
-            agreeTos: true,
-            communityMember: true,
-            telemetry: false,
 
-            // Define our domain/site configuration
-            servername: config.mainDomain,
-            servernames: domains,
+            config.defaultPort = portAnswer.defaultPort;
+        }
 
-            // Use our ports
-            plainHttpPort: config.httpPort,
-            secureHttpsPort: config.httpsPort
+        // Performans yapılandırma seçenekleri
+        const performanceAnswer = await inquirer.prompt([{
+            type: 'confirm',
+            name: 'configurePerformance',
+            message: 'Performans ayarlarını yapılandırmak ister misiniz?',
+            default: true
+        }]);
+
+        if (performanceAnswer.configurePerformance) {
+            const workerAnswer = await inquirer.prompt([{
+                type: 'input',
+                name: 'maxWorkers',
+                message: `Maksimum worker sayısı (çekirdek sayısı: ${NUM_CPUS}):`,
+                default: config.maxWorkers,
+                validate: input => {
+                    const workers = parseInt(input, 10);
+                    if (isNaN(workers) || workers < 1) {
+                        return 'En az 1 worker gereklidir';
+                    }
+                    return true;
+                },
+                filter: input => parseInt(input, 10)
+            }]);
+
+            config.maxWorkers = workerAnswer.maxWorkers;
+
+            // Proxy zaman aşımı
+            const timeoutAnswer = await inquirer.prompt([{
+                type: 'input',
+                name: 'proxyTimeout',
+                message: 'Proxy zaman aşımı (milisaniye):',
+                default: config.proxyOptions.proxyTimeout,
+                validate: input => {
+                    const timeout = parseInt(input, 10);
+                    if (isNaN(timeout) || timeout < 1000) {
+                        return 'En az 1000 ms (1 saniye) olmalıdır';
+                    }
+                    return true;
+                },
+                filter: input => parseInt(input, 10)
+            }]);
+
+            config.proxyOptions.proxyTimeout = timeoutAnswer.proxyTimeout;
+            config.proxyOptions.timeout = timeoutAnswer.proxyTimeout;
+        }
+
+        saveConfig(config);
+        log.success('Konfigürasyon kaydedildi.');
+
+        // Certbot komutunu oluştur
+        const certbotCommand = await createCertbotCommand(domain, wildcardDomain);
+
+        log.title('Let\'s Encrypt Sertifikası Yapılandırma');
+        log.info('DNS TXT kayıtları eklemeniz istenecek, lütfen bekleyin...');
+        log.info(`Çalıştırılacak komut: ${certbotCommand}`);
+
+        // Certbot komutunu çalıştır (interaktif)
+        const certbotProcess = spawn(certbotCommand.split(' ')[0], certbotCommand.split(' ').slice(1), {
+            stdio: 'inherit', // Doğrudan terminale bağla
+            shell: true
         });
 
-    const formatMessage = config.dynamicDomainFormat || `[PORT].${config.mainDomain}`;
-    console.log(colors.cyan('\n🚀 Dynamic Proxy Server with SSL is starting...\n'));
-    console.log(colors.green(`✓ Forwarding: ${colors.bold(formatMessage)} → ${colors.bold(`${config.targetIP}:[PORT]`)}`));
-    console.log(colors.green(`✓ HTTP port: ${colors.bold(config.httpPort)}`));
-    console.log(colors.green(`✓ HTTPS port: ${colors.bold(config.httpsPort)}`));
-    console.log(colors.green(`✓ Admin email: ${colors.bold(config.adminEmail)}`));
-    console.log(colors.green(`✓ Certificate domains: ${colors.bold(domains.join(', '))}`));
-    console.log(colors.cyan('\n🔒 SSL certificates will be automatically issued and renewed\n'));
+        // Certbot işleminin tamamlanmasını bekle
+        await new Promise((resolve, reject) => {
+            certbotProcess.on('close', (code) => {
+                if (code === 0) {
+                    resolve();
+                } else {
+                    reject(new Error(`Certbot işlemi ${code} hata koduyla çıktı.`));
+                }
+            });
+        }).catch(error => {
+            log.error(error.message);
+            return;
+        });
+
+        // TXT kaydı eklendi mi onayı al
+        const txtConfirm = await inquirer.prompt([{
+            type: 'confirm',
+            name: 'confirmed',
+            message: 'DNS TXT kaydını eklediniz mi?',
+            default: false
+        }]);
+
+        if (txtConfirm.confirmed) {
+            try {
+                // Certbot çıktı dizinini kontrol et
+                const certbotLiveDir = path.join(CERTBOT_DIR, 'live');
+                if (!fs.existsSync(certbotLiveDir)) {
+                    log.error(`Certbot dizini bulunamadı: ${certbotLiveDir}`);
+                    log.info('Olası nedenler:');
+                    log.info('1. Certbot sertifika oluşturma işlemi başarısız olmuş olabilir');
+                    log.info('2. Certbot farklı bir dizine sertifikaları kaydetmiş olabilir');
+
+                    // Kullanıcıdan certbot dizinini manuel olarak belirtmesini iste
+                    const manualPathConfirm = await inquirer.prompt([{
+                        type: 'confirm',
+                        name: 'useManualPath',
+                        message: 'Sertifika dosyalarının yolunu manuel olarak belirtmek ister misiniz?',
+                        default: true
+                    }]);
+
+                    if (manualPathConfirm.useManualPath) {
+                        const manualPath = await inquirer.prompt([{
+                            type: 'input',
+                            name: 'certPath',
+                            message: 'Lütfen fullchain.pem dosyasının tam yolunu girin:',
+                            validate: input => fs.existsSync(input) ? true : 'Dosya bulunamadı'
+                        }, {
+                            type: 'input',
+                            name: 'keyPath',
+                            message: 'Lütfen privkey.pem dosyasının tam yolunu girin:',
+                            validate: input => fs.existsSync(input) ? true : 'Dosya bulunamadı'
+                        }]);
+
+                        // Manuel belirtilen dosyaları kopyala
+                        const destDir = path.join(SSL_DIR, domain);
+                        if (!fs.existsSync(destDir)) {
+                            fs.mkdirSync(destDir, { recursive: true });
+                        }
+
+                        fs.copyFileSync(manualPath.certPath, path.join(destDir, 'fullchain.pem'));
+                        fs.copyFileSync(manualPath.keyPath, path.join(destDir, 'privkey.pem'));
+
+                        // SSL bilgilerini konfigürasyona ekle
+                        config.ssl = {
+                            cert: path.join(destDir, 'fullchain.pem'),
+                            key: path.join(destDir, 'privkey.pem')
+                        };
+
+                        saveConfig(config);
+                        log.success('SSL sertifikaları konfigürasyona eklendi.');
+                        log.success('Kurulum tamamlandı!');
+                        log.info('Proxy\'i başlatmak için şu komutu çalıştırın: node proxy.js start');
+                        return;
+                    } else {
+                        log.warning('İşlem iptal edildi.');
+                        return;
+                    }
+                }
+
+                // SSL dosyalarını kopyala
+                const sslOptions = copySSLFiles(domain);
+
+                // SSL bilgilerini konfigürasyona ekle
+                config.ssl = {
+                    cert: sslOptions.cert,
+                    key: sslOptions.key
+                };
+
+                saveConfig(config);
+                log.success('SSL sertifikaları konfigürasyona eklendi.');
+                log.success('Kurulum tamamlandı!');
+                log.info('Proxy\'i başlatmak için şu komutu çalıştırın: node proxy.js start');
+            } catch (error) {
+                log.error('SSL işlemi hatası: ' + error.message);
+
+                // Hata durumunda kullanıcıya yardımcı bilgiler göster
+                log.info('\nSorunun çözümü için şunları deneyebilirsiniz:');
+                log.info('1. Certbot\'u manuel olarak çalıştırın:');
+                log.info(`   certbot certonly --manual --preferred-challenges dns -d "*.${domain}" -d "${domain}"`);
+                log.info('2. Oluşturulan sertifikaları kontrol edin:');
+                log.info('   ls -la /etc/letsencrypt/live/');
+                log.info('3. Kurulumu tekrar çalıştırın ve sertifika yollarını manuel olarak belirtin.');
+            }
+        } else {
+            log.warning('İşlem iptal edildi.');
+        }
+    } catch (error) {
+        log.error('Kurulum hatası: ' + error.message);
+    }
 }
 
-// Start the proxy server
-startProxyServer().catch(err => {
-    console.error(colors.red('\n❌ Error starting proxy server:'));
-    console.error(colors.red(err.stack || err.message));
-    process.exit(1);
-});
+// Proxy sunucusunu başlat - Optimize edilmiş
+function startProxyServer(config) {
+    // Ana domain kısmını al (örn: *.example.com -> example.com)
+    const baseDomain = config.domain;
+    const wildcardDomain = config.wildcardDomain;
+    const usePortBasedSubdomains = config.usePortBasedSubdomains || false;
+    const defaultPort = config.defaultPort || 0;
+    const proxyOptions = config.proxyOptions || {};
+
+    // SSL seçeneklerini yükle
+    const sslOptions = {
+        cert: fs.readFileSync(config.ssl.cert),
+        key: fs.readFileSync(config.ssl.key)
+    };
+
+    // Ana sayfa HTML'i (hafızada tutarak performans artışı)
+    const indexHtml = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Port-Based Proxy Server</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 20px;
+                line-height: 1.6;
+            }
+            h1 {
+                color: #333;
+                border-bottom: 1px solid #eee;
+                padding-bottom: 10px;
+            }
+            code {
+                background: #f4f4f4;
+                padding: 2px 5px;
+                border-radius: 3px;
+            }
+            .example {
+                background: #f8f8f8;
+                padding: 15px;
+                border-left: 4px solid #4CAF50;
+                margin: 20px 0;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Port-Based Subdomain Proxy</h1>
+        <p>Bu sunucu port tabanlı subdomain yönlendirme için yapılandırılmıştır.</p>
+        <p>Kullanım şekli:</p>
+        <div class="example">
+            <code>PORT.${baseDomain}</code> → <code>127.0.0.1:PORT</code>
+        </div>
+        <p>Örnek:</p>
+        <div class="example">
+            <code>8080.${baseDomain}</code> → <code>127.0.0.1:8080</code>
+        </div>
+        <p>Subdomain kısmına doğrudan bağlanmak istediğiniz port numarasını yazın.</p>
+    </body>
+    </html>
+    `;
+
+    // Worker process içinde çalışıyorsa
+    if (cluster.isWorker) {
+        // HTTP proxy oluştur
+        const proxy = createProxyServer({
+            ...proxyOptions,
+            ws: true // WebSocket desteği
+        });
+
+        // Hata yönetimi
+        proxy.on('error', (err, req, res) => {
+            const logMessage = `Proxy hatası: ${err.message}, Hedef: ${req.headers.host}`;
+            writeLog(logMessage, true);
+
+            if (res.writeHead) {
+                res.writeHead(502, { 'Content-Type': 'text/plain' });
+                res.end('Proxy hatası oluştu. Hedef sunucuya erişilemiyor.');
+            }
+        });
+
+        // WebSocket proxy hataları
+        proxy.on('proxyReqWs', (proxyReq, req, socket, options, head) => {
+            socket.on('error', (err) => {
+                writeLog(`WebSocket hatası: ${err.message}`, true);
+            });
+        });
+
+        // HTTPS sunucusu oluştur
+        const httpsServer = https.createServer(sslOptions, (req, res) => {
+            // Host başlığından subdomain al
+            const host = req.headers.host?.toLowerCase();
+            if (!host) {
+                res.writeHead(400, { 'Content-Type': 'text/plain' });
+                res.end('Host başlığı gerekli');
+                return;
+            }
+
+            // Cache'den hedef bilgisini al
+            const cacheKey = host;
+            const cachedTarget = domainCache.get(cacheKey);
+
+            if (cachedTarget) {
+                // Cache'den hedef bilgisini kullan
+                proxy.web(req, res, { target: cachedTarget });
+                return;
+            }
+
+            let targetPort;
+
+            // Ana domain için kontrol
+            if (host === baseDomain) {
+                // Ana domain için varsayılan port kullan
+                if (defaultPort > 0) {
+                    targetPort = defaultPort;
+                } else {
+                    // Ana sayfayı göster
+                    res.writeHead(200, { 'Content-Type': 'text/html' });
+                    res.end(indexHtml);
+                    return;
+                }
+            }
+            // Subdomain kontrolü
+            else if (usePortBasedSubdomains) {
+                // Port tabanlı subdomain kullanılıyorsa
+                // Regex ile daha verimli subdomain parsing
+                const subdomainMatch = host.match(/^(\d+)\.(.+)$/);
+
+                if (subdomainMatch && subdomainMatch[2] === baseDomain) {
+                    targetPort = parseInt(subdomainMatch[1], 10);
+
+                    // Geçerli port aralığında mı kontrol et
+                    if (targetPort < 1 || targetPort > 65535) {
+                        res.writeHead(400, { 'Content-Type': 'text/plain' });
+                        res.end(`Geçersiz port numarası: ${targetPort}. Port aralığı 1-65535 olmalıdır.`);
+                        return;
+                    }
+                } else {
+                    res.writeHead(400, { 'Content-Type': 'text/plain' });
+                    res.end(`Geçersiz subdomain formatı. Subdomain bir port numarası olmalıdır (örn: 8080.${baseDomain})`);
+                    return;
+                }
+            } else {
+                res.writeHead(404, { 'Content-Type': 'text/plain' });
+                res.end(`Bilinmeyen subdomain: ${host}`);
+                return;
+            }
+
+            // İlgili porta yönlendir
+            const target = `http://127.0.0.1:${targetPort}`;
+
+            // Hedefi cache'e ekle
+            domainCache.set(cacheKey, target);
+
+            // Cache TTL için zamanlayıcı
+            setTimeout(() => {
+                domainCache.delete(cacheKey);
+            }, HOST_CACHE_TTL);
+
+            writeLog(`Yönlendiriliyor: ${host} -> ${target}`);
+            proxy.web(req, res, { target });
+        });
+
+        // WebSocket desteği
+        httpsServer.on('upgrade', (req, socket, head) => {
+            const host = req.headers.host?.toLowerCase();
+            if (!host) {
+                socket.destroy();
+                return;
+            }
+
+            // Cache'den WebSocket hedefini al
+            const cacheKey = `ws:${host}`;
+            const cachedTarget = domainCache.get(cacheKey);
+
+            if (cachedTarget) {
+                proxy.ws(req, socket, head, { target: cachedTarget });
+                return;
+            }
+
+            let targetPort;
+
+            // Ana domain için kontrol
+            if (host === baseDomain) {
+                if (defaultPort > 0) {
+                    targetPort = defaultPort;
+                } else {
+                    socket.destroy();
+                    return;
+                }
+            }
+            // Subdomain kontrolü
+            else if (usePortBasedSubdomains) {
+                const subdomainMatch = host.match(/^(\d+)\.(.+)$/);
+
+                if (subdomainMatch && subdomainMatch[2] === baseDomain) {
+                    targetPort = parseInt(subdomainMatch[1], 10);
+
+                    if (targetPort < 1 || targetPort > 65535) {
+                        socket.destroy();
+                        return;
+                    }
+                } else {
+                    socket.destroy();
+                    return;
+                }
+            } else {
+                socket.destroy();
+                return;
+            }
+
+            const target = `http://127.0.0.1:${targetPort}`;
+
+            // WebSocket hedefini cache'e ekle
+            domainCache.set(cacheKey, target);
+
+            // Cache TTL için zamanlayıcı
+            setTimeout(() => {
+                domainCache.delete(cacheKey);
+            }, HOST_CACHE_TTL);
+
+            writeLog(`WebSocket yönlendiriliyor: ${host} -> ${target}`);
+            proxy.ws(req, socket, head, { target });
+        });
+
+        // HTTP -> HTTPS yönlendirme sunucusu
+        const httpServer = http.createServer((req, res) => {
+            const host = req.headers.host;
+            if (!host) {
+                res.writeHead(400, { 'Content-Type': 'text/plain' });
+                res.end('Host başlığı gerekli');
+                return;
+            }
+
+            const redirectUrl = `https://${host}${req.url}`;
+            res.writeHead(301, { 'Location': redirectUrl });
+            res.end();
+        });
+
+        // Sunucuları belirtilen portlarda başlat
+        const HTTPS_PORT = 443;
+        const HTTP_PORT = 80;
+
+        // Daha iyi hata yönetimi
+        function startServers() {
+            try {
+                // HTTPS sunucusu başlat
+                httpsServer.listen(HTTPS_PORT, () => {
+                    writeLog(`HTTPS proxy sunucusu port ${HTTPS_PORT} üzerinde çalışıyor (Worker ${cluster.worker.id}).`);
+                });
+
+                // HTTPS hata dinleyicisi
+                httpsServer.on('error', (err) => {
+                    if (err.code === 'EADDRINUSE') {
+                        writeLog(`Port ${HTTPS_PORT} zaten kullanımda. Proxy başlatılamadı.`, true);
+                    } else {
+                        writeLog(`HTTPS sunucusu hatası: ${err.message}`, true);
+                    }
+                    process.exit(1);
+                });
+
+                // HTTP sunucusu başlat
+                httpServer.listen(HTTP_PORT, () => {
+                    writeLog(`HTTP -> HTTPS yönlendirme sunucusu port ${HTTP_PORT} üzerinde çalışıyor (Worker ${cluster.worker.id}).`);
+                });
+
+                // HTTP hata dinleyicisi
+                httpServer.on('error', (err) => {
+                    if (err.code === 'EADDRINUSE') {
+                        writeLog(`Port ${HTTP_PORT} zaten kullanımda. Yönlendirme sunucusu başlatılamadı.`, true);
+                        // HTTP olmadan devam et, kritik değil
+                    } else {
+                        writeLog(`HTTP sunucusu hatası: ${err.message}`, true);
+                    }
+                });
+
+                // Worker durumunu bildir
+                process.send({ status: 'ready', id: cluster.worker.id });
+            } catch (err) {
+                writeLog(`Sunucu başlatma hatası: ${err.message}`, true);
+                process.exit(1);
+            }
+        }
+
+        // Sunucuları başlat
+        startServers();
+    }
+    // Master süreç ise, worker'ları yönet
+    else if (cluster.isMaster) {
+        const maxWorkers = config.maxWorkers || 1;
+        let readyWorkers = 0;
+
+        writeLog(`Wildcard domain: ${wildcardDomain}`);
+        writeLog(`Port tabanlı subdomain yönlendirme aktif:`);
+        writeLog(`- [PORT].${baseDomain} -> 127.0.0.1:[PORT]`);
+
+        if (defaultPort > 0) {
+            writeLog(`Ana domain yönlendirmesi: ${baseDomain} -> 127.0.0.1:${defaultPort}`);
+        }
+
+        writeLog(`Cluster modu aktif: ${maxWorkers} worker başlatılıyor...`);
+
+        // Worker süreçleri başlat
+        for (let i = 0; i < maxWorkers; i++) {
+            cluster.fork();
+        }
+
+        // Worker süreçlerini dinle
+        cluster.on('message', (worker, message) => {
+            if (message.status === 'ready') {
+                readyWorkers++;
+                if (readyWorkers === maxWorkers) {
+                    writeLog(`Tüm worker'lar hazır. Proxy tam kapasitede çalışıyor.`);
+                }
+            }
+        });
+
+        // Worker çökmelerini yönet
+        cluster.on('exit', (worker, code, signal) => {
+            if (code !== 0) {
+                writeLog(`Worker ${worker.id} çöktü! Yeniden başlatılıyor...`, true);
+                cluster.fork();
+            }
+        });
+    }
+}
+
+// Proxy'yi başlat komutu
+async function startCommand() {
+    try {
+        log.title('Wildcard SSL Proxy Başlatılıyor');
+
+        // Mevcut durumu kontrol et
+        const status = checkProxyStatus();
+
+        if (status.running) {
+            log.warning(`Proxy zaten çalışıyor! PID: ${status.pid}`);
+            return;
+        }
+
+        // Konfigürasyon yükle
+        const config = loadConfig();
+
+        if (!config) {
+            log.error('Konfigürasyon bulunamadı! Önce kurulum yapın: node proxy.js setup');
+            return;
+        }
+
+        if (!config.ssl || !config.ssl.cert || !config.ssl.key) {
+            log.error('SSL sertifikaları bulunamadı! Kurulumu tamamlayın: node proxy.js setup');
+            return;
+        }
+
+        // Port yönlendirme bilgisini göster
+        log.info('Port tabanlı subdomain yönlendirme kullanılıyor:');
+        log.info(`[PORT].${config.domain} -> 127.0.0.1:[PORT]`);
+
+        if (config.defaultPort > 0) {
+            log.info(`Ana domain yönlendirmesi: ${config.domain} -> 127.0.0.1:${config.defaultPort}`);
+        }
+
+        // Arkaplanda çalıştır
+        const out = fs.openSync(LOG_FILE, 'a');
+        const err = fs.openSync(ERROR_LOG_FILE, 'a');
+
+        log.info('Proxy arkaplanda başlatılıyor...');
+
+        const child = spawn(process.execPath, [__filename, 'run'], {
+            detached: true,
+            stdio: ['ignore', out, err]
+        });
+
+        // Çocuk işlemin bağımsız çalışmasını sağla
+        child.unref();
+
+        // Durum bilgisini kaydet
+        const newStatus = {
+            pid: child.pid,
+            startTime: new Date().toISOString(),
+            domain: config.domain,
+            wildcardDomain: config.wildcardDomain,
+            workers: config.maxWorkers || 1
+        };
+
+        saveProxyStatus(newStatus);
+
+        log.success(`Proxy başarıyla arkaplanda başlatıldı. PID: ${child.pid}`);
+        log.info(`Log dosyaları: ${LOG_FILE} ve ${ERROR_LOG_FILE}`);
+    } catch (error) {
+        log.error('Başlatma hatası: ' + error.message);
+    }
+}
+
+// Proxy'yi durdur komutu
+function stopCommand() {
+    try {
+        log.title('Wildcard SSL Proxy Durduruluyor');
+
+        // Mevcut durumu kontrol et
+        const status = checkProxyStatus();
+
+        if (!status.running) {
+            log.warning('Proxy zaten çalışmıyor!');
+            return;
+        }
+
+        // Prosesi sonlandır
+        try {
+            process.kill(status.pid, 'SIGTERM');
+            log.success(`Proxy durduruldu. PID: ${status.pid}`);
+
+            // Durum bilgisini güncelle
+            status.running = false;
+            status.stopTime = new Date().toISOString();
+            saveProxyStatus(status);
+        } catch (err) {
+            log.error(`Prosesi durdururken hata oluştu: ${err.message}`);
+        }
+    } catch (error) {
+        log.error('Durdurma hatası: ' + error.message);
+    }
+}
+
+// Durum komutu
+function statusCommand() {
+    try {
+        log.title('Wildcard SSL Proxy Durumu');
+
+        // Mevcut durumu kontrol et
+        const status = checkProxyStatus();
+
+        if (status.running) {
+            log.success(`Proxy çalışıyor. PID: ${status.pid}`);
+            log.info(`Başlatma zamanı: ${status.startTime}`);
+            log.info(`Domain: ${status.domain}`);
+            log.info(`Wildcard domain: ${status.wildcardDomain}`);
+
+            if (status.workers) {
+                log.info(`Çalışan worker sayısı: ${status.workers}`);
+            }
+
+            // Konfigürasyon yükle
+            const config = loadConfig();
+
+            if (config) {
+                log.info('Aktif port tabanlı subdomain yönlendirme:');
+                log.info(`[PORT].${config.domain} -> 127.0.0.1:[PORT]`);
+
+                if (config.defaultPort > 0) {
+                    log.info(`Ana domain yönlendirmesi: ${config.domain} -> 127.0.0.1:${config.defaultPort}`);
+                }
+            }
+        } else {
+            log.warning('Proxy çalışmıyor.');
+
+            if (status.stopTime) {
+                log.info(`Son durdurma zamanı: ${status.stopTime}`);
+            }
+        }
+    } catch (error) {
+        log.error('Durum hatası: ' + error.message);
+    }
+}
+
+// Çalıştırma komutu - doğrudan işlem çalıştırması
+function runCommand() {
+    try {
+        // Konfigürasyon yükle
+        const config = loadConfig();
+
+        if (!config) {
+            console.error('Konfigürasyon bulunamadı!');
+            process.exit(1);
+        }
+
+        // Proxy sunucusunu başlat
+        startProxyServer(config);
+    } catch (error) {
+        console.error('Çalıştırma hatası: ' + error.message);
+        process.exit(1);
+    }
+}
+
+// Ana uygulama
+async function main() {
+    // Dizin yapısını kontrol et
+    if (!fs.existsSync(PROXY_DIR)) {
+        await setupDirectories();
+    }
+
+    // Komut satırı argümanlarını yapılandır
+    const argv = yargs(hideBin(process.argv))
+        .usage('Usage: $0 <command> [options]')
+        .command('setup', 'SSL oluşturma ve proxy için kurulum yap', (yargs) => {
+            return yargs
+                .option('domain', {
+                    alias: 'd',
+                    describe: 'Ana domain adı',
+                    type: 'string'
+                });
+        })
+        .command('start', 'Proxy sunucusunu başlat')
+        .command('stop', 'Çalışan proxy sunucusunu durdur')
+        .command('status', 'Proxy sunucusunun durumunu kontrol et')
+        .command('run', 'Proxy sunucusunu doğrudan çalıştır (genelde dahili kullanım)')
+        .demandCommand(1, 'Bir komut belirtmelisiniz: setup, start, stop veya status')
+        .help()
+        .alias('help', 'h')
+        .version()
+        .alias('version', 'v')
+        .argv;
+
+    // Komutu çalıştır
+    const command = argv._[0];
+
+    switch (command) {
+        case 'setup':
+            await setupCommand(argv);
+            break;
+        case 'start':
+            await startCommand();
+            break;
+        case 'stop':
+            stopCommand();
+            break;
+        case 'status':
+            statusCommand();
+            break;
+        case 'run':
+            runCommand();
+            break;
+        default:
+            log.error(`Bilinmeyen komut: ${command}`);
+            break;
+    }
+}
+
+// Programı başlat
+main();
