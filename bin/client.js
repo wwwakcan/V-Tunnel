@@ -11,7 +11,7 @@
  * @author      Cengiz AKCAN <me@cengizakcan.com>
  * @copyright   Copyright (c) 2025, Cengiz AKCAN
  * @license     MIT
- * @version     1.1.3
+ * @version     1.1.4
  * @link        https://github.com/wwwakcan/V-Tunnel
  *
  * This software is released under the MIT License.
@@ -42,6 +42,8 @@ const colors = require('colors/safe');
 const CONFIG_DIR    = path.join(__dirname, '.vtunnel-client');
 const AUTH_FILE     = path.join(CONFIG_DIR, 'auth.json');
 const TUNNELS_FILE  = path.join(CONFIG_DIR, 'tunnels.json');
+const API_PID_FILE = path.join(CONFIG_DIR, 'api.pid');
+const apiServer = require('./api');
 
 // Color themes
 colors.setTheme({
@@ -132,6 +134,99 @@ async function saveActiveTunnels(tunnelsData) {
         return true;
     } catch (err) {
         logger.error('Could not save active tunnels: ' + err);
+        return false;
+    }
+}
+
+// Check if the API server is running
+async function isApiServerRunning() {
+    try {
+        if (fs.existsSync(API_PID_FILE)) {
+            const pidData = await readFileAsync(API_PID_FILE, 'utf8');
+            const pid = parseInt(pidData.trim(), 10);
+
+            if (!isNaN(pid)) {
+                return await isProcessRunning(pid);
+            }
+        }
+        return false;
+    } catch (err) {
+        logger.error('Error checking if API server is running: ' + err);
+        return false;
+    }
+}
+
+// Start the API server
+// Start the API server
+async function startApiServer() {
+    try {
+        // Check if API server is already running
+        if (await isApiServerRunning()) {
+            logger.info('API server is already running');
+            return true;
+        }
+
+        // Check if user is logged in
+        const auth = await loadAuth();
+        if (!auth) {
+            logger.error('You must be logged in to start the API server');
+            logger.info('Please use "node client.js login" to authenticate first');
+            return false;
+        }
+
+        logger.info('Starting API server...');
+
+        // Start API server in a separate process
+        const apiProcess = child_process.spawn(process.execPath, [
+            path.join(__dirname, 'api.js')
+        ], {
+            detached: true,
+            stdio: 'ignore'
+        });
+
+        // Detach child process from parent
+        apiProcess.unref();
+
+        logger.success(`API server started. PID: ${apiProcess.pid}`);
+        return true;
+    } catch (err) {
+        logger.error('Error starting API server: ' + err);
+        return false;
+    }
+}
+
+// Stop the API server
+async function stopApiServer() {
+    try {
+        // Check if API server is running
+        if (!await isApiServerRunning()) {
+            logger.info('API server is not running');
+            return true;
+        }
+
+        // Get the API server PID
+        const pidData = await readFileAsync(API_PID_FILE, 'utf8');
+        const pid = parseInt(pidData.trim(), 10);
+
+        if (isNaN(pid)) {
+            logger.error('Invalid PID in API PID file');
+            return false;
+        }
+
+        // Kill the process
+        try {
+            process.kill(pid);
+            logger.success('API server stopped successfully');
+
+            // Remove the PID file
+            fs.unlinkSync(API_PID_FILE);
+            return true;
+        } catch (err) {
+            logger.error(`Could not stop API server: ${err.message}`);
+            return false;
+        }
+    } catch (err) {
+        logger.error('Error stopping API server: ' + err.message);
         return false;
     }
 }
@@ -264,7 +359,12 @@ async function connectAndSend(message, timeoutMs = 10000) {
     });
 }
 
-// Create Tunnel Client
+// Add these variables to track reconnection state
+let reconnectionAttempts = 0;
+const MAX_RECONNECTION_ATTEMPTS = 3;
+let reconnectionTimer = null;
+
+// Modify the createTunnelClient function to handle reconnections
 async function createTunnelClient(tunnelName, localHost, localPort) {
     const auth = await loadAuth();
     if (!auth) {
@@ -275,6 +375,8 @@ async function createTunnelClient(tunnelName, localHost, localPort) {
     logger.info(`Starting tunnel ${tunnelName}...`);
     logger.info(`Server: ${auth.server}:${auth.port}`);
     logger.info(`Target: ${localHost}:${localPort}`);
+
+    reconnectionAttempts = 0; // Reset reconnection attempts counter
 
     return new Promise((resolve, reject) => {
         // Safely convert port value
@@ -291,6 +393,7 @@ async function createTunnelClient(tunnelName, localHost, localPort) {
         let registered = false;
         let tunnelPort;
         let buffer = '';
+        let isConnected = false;
 
         controlSocket.on('data', data => {
             try {
@@ -315,21 +418,37 @@ async function createTunnelClient(tunnelName, localHost, localPort) {
 
         controlSocket.on('error', err => {
             logger.error('Control connection error: ' + err.message);
-            reject(err);
+            // Don't reject here, let the close handler handle reconnection
+            if (registered) {
+                logger.warning('Connection error detected. Will attempt to reconnect...');
+            } else {
+                reject(err);
+            }
         });
 
         controlSocket.on('close', () => {
             logger.info('Connection to tunnel server closed');
             clearInterval(pingInterval);
-            resolve(null);  // Clean exit
+            isConnected = false;
+
+            if (registered) {
+                // Only attempt to reconnect if we were previously registered
+                attemptReconnection(tunnelName, localHost, localPort, tunnelPort, resolve);
+            } else {
+                resolve(null);  // Clean exit for initial connection failure
+            }
         });
 
         controlSocket.connect(SERVER_PORT, SERVER_HOST, () => {
             logger.info('Connected to tunnel server');
+            isConnected = true;
 
             // Start ping interval
             pingInterval = setInterval(() => {
-                sendMessage(controlSocket, { type: 'ping', time: Date.now() });
+                // Check connection status before sending ping
+                if (!controlSocket.destroyed) {
+                    sendMessage(controlSocket, { type: 'ping', time: Date.now() });
+                }
             }, 30000);
         });
 
@@ -364,10 +483,11 @@ async function createTunnelClient(tunnelName, localHost, localPort) {
 
                 case 'tunnel_registered':
                     registered = true;
+                    reconnectionAttempts = 0; // Reset counter when successfully registered
                     tunnelPort = message.port;
                     logger.success(`Tunnel successfully registered! Your service is accessible at:`);
                     logger.success(`  ${auth.server}:${message.port}`);
-                    resolve({ controlSocket, tunnelName, tunnelPort });
+                    resolve({ controlSocket, tunnelName, tunnelPort, isConnected: true });
                     break;
 
                 case 'error':
@@ -400,7 +520,7 @@ async function createTunnelClient(tunnelName, localHost, localPort) {
             }
         }
 
-        // Handle a new client connection
+        // Handler functions for client connections
         function handleNewConnection(controlSocket, clientId, remoteAddress, remotePort) {
             logger.info(`New connection from ${remoteAddress}:${remotePort} (ID: ${clientId})`);
 
@@ -467,7 +587,6 @@ async function createTunnelClient(tunnelName, localHost, localPort) {
             });
         }
 
-        // Forward data from remote client to local service
         function forwardDataToLocalService(clientId, dataBase64) {
             if (!clients[clientId]) {
                 logger.error(`Received data for unknown client ${clientId}`);
@@ -499,7 +618,6 @@ async function createTunnelClient(tunnelName, localHost, localPort) {
             }
         }
 
-        // Close client connection
         function closeClientConnection(clientId) {
             if (!clients[clientId]) return;
 
@@ -514,6 +632,186 @@ async function createTunnelClient(tunnelName, localHost, localPort) {
             delete clients[clientId];
         }
     });
+}
+
+// New function to handle reconnection attempts
+async function attemptReconnection(tunnelName, localHost, localPort, tunnelPort, resolveOriginalPromise) {
+    if (reconnectionAttempts >= MAX_RECONNECTION_ATTEMPTS) {
+        logger.error(`Failed to reconnect after ${MAX_RECONNECTION_ATTEMPTS} attempts. Stopping tunnel.`);
+
+        // Get tunnel data to find and stop the process
+        const tunnelsData = await loadActiveTunnels();
+        if (tunnelsData.active) {
+            const activeTunnel = tunnelsData.active.find(t => t.name === tunnelName);
+            if (activeTunnel) {
+                try {
+                    process.kill(activeTunnel.pid);
+                    logger.warning(`Tunnel ${tunnelName} stopped due to connection failures.`);
+
+                    // Remove from active tunnels
+                    tunnelsData.active = tunnelsData.active.filter(t => t.name !== tunnelName);
+                    await saveActiveTunnels(tunnelsData);
+                } catch (err) {
+                    logger.error(`Could not stop process: ${err.message}`);
+                }
+            }
+        }
+
+        resolveOriginalPromise(null);
+        return;
+    }
+
+    reconnectionAttempts++;
+    logger.warning(`Attempting to reconnect (${reconnectionAttempts}/${MAX_RECONNECTION_ATTEMPTS})...`);
+
+    // Clear any existing reconnection timer
+    if (reconnectionTimer) {
+        clearTimeout(reconnectionTimer);
+    }
+
+    // Wait for a moment before attempting to reconnect (exponential backoff)
+    const delay = Math.min(1000 * Math.pow(2, reconnectionAttempts - 1), 30000);
+    reconnectionTimer = setTimeout(async () => {
+        try {
+            logger.info(`Reconnecting to tunnel ${tunnelName}...`);
+            const newTunnel = await createTunnelClient(tunnelName, localHost, localPort);
+
+            if (newTunnel && newTunnel.isConnected) {
+                logger.success(`Successfully reconnected to tunnel ${tunnelName}!`);
+                resolveOriginalPromise(newTunnel);
+            } else {
+                // If reconnection failed but didn't throw an error, attempt again
+                attemptReconnection(tunnelName, localHost, localPort, tunnelPort, resolveOriginalPromise);
+            }
+        } catch (err) {
+            logger.error(`Reconnection attempt failed: ${err.message}`);
+            // Try again
+            attemptReconnection(tunnelName, localHost, localPort, tunnelPort, resolveOriginalPromise);
+        }
+    }, delay);
+}
+
+// Modify the runTunnel function to use our enhanced tunnel client
+async function runTunnel(argv) {
+    try {
+        if (!argv.name || !argv.port) {
+            logger.error('Tunnel name and port are required');
+            console.log('Usage: node client.js run --name <tunnel_name> --host <local_host> --port <local_port>');
+            return;
+        }
+
+        // Safely convert port value
+        const localPort = parseInt(argv.port, 10);
+        if (isNaN(localPort)) {
+            logger.error(`Invalid port: ${argv.port}`);
+            return;
+        }
+
+        logger.info(`Starting tunnel ${argv.name} (${argv.host || 'localhost'}:${localPort})`);
+
+        const tunnel = await createTunnelClient(argv.name, argv.host || 'localhost', localPort);
+
+        if (tunnel) {
+            logger.success(`Tunnel successfully created!`);
+
+            // Set up connection health check
+            const healthCheck = setInterval(async () => {
+                if (!tunnel.controlSocket || tunnel.controlSocket.destroyed) {
+                    logger.warning('Tunnel connection appears to be down.');
+                    clearInterval(healthCheck);
+
+                    // Connection already closed, reconnection should be handled by the close event
+                }
+            }, 60000); // Check every minute
+
+            // Catch Ctrl+C
+            process.on('SIGINT', () => {
+                logger.info('Closing tunnel...');
+                clearInterval(healthCheck);
+                if (tunnel.controlSocket && !tunnel.controlSocket.destroyed) {
+                    tunnel.controlSocket.destroy();
+                }
+                process.exit(0);
+            });
+
+            // Keep process alive for tunnel to persist
+            setInterval(() => {}, 1000000);
+        }
+    } catch (err) {
+        logger.error('Error during tunnel run: ' + err.message);
+        process.exit(1);
+    }
+}
+
+// Add a new function to check all tunnels and restart any that have crashed
+async function checkAndRestartTunnels() {
+    try {
+        const tunnelsData = await loadActiveTunnels();
+
+        if (!tunnelsData.active || tunnelsData.active.length === 0) {
+            logger.debug('No active tunnels to check.');
+            return;
+        }
+
+        logger.info('Checking status of all active tunnels...');
+
+        // Get current running tunnels
+        let needsUpdate = false;
+
+        for (const tunnel of tunnelsData.active) {
+            const isRunning = await isProcessRunning(tunnel.pid);
+
+            if (!isRunning) {
+                logger.warning(`Tunnel "${tunnel.name}" (PID: ${tunnel.pid}) is not running. Attempting to restart...`);
+
+                // Get tunnel configuration
+                const tunnelConfig = tunnelsData.tunnels.find(t => t.name === tunnel.name);
+
+                if (tunnelConfig) {
+                    try {
+                        // Start tunnel in background
+                        const activeTunnel = await startTunnelInBackground({
+                            name: tunnel.name,
+                            localHost: tunnelConfig.localHost,
+                            localPort: tunnelConfig.localPort
+                        });
+
+                        // Update tunnel in active list
+                        const index = tunnelsData.active.findIndex(t => t.name === tunnel.name);
+                        if (index !== -1) {
+                            tunnelsData.active[index] = activeTunnel;
+                        }
+
+                        logger.success(`Restarted tunnel "${tunnel.name}" with new PID: ${activeTunnel.pid}`);
+                        needsUpdate = true;
+                    } catch (err) {
+                        logger.error(`Failed to restart tunnel "${tunnel.name}": ${err.message}`);
+                    }
+                } else {
+                    logger.error(`Could not find configuration for tunnel "${tunnel.name}"`);
+                    // Remove from active tunnels
+                    tunnelsData.active = tunnelsData.active.filter(t => t.name !== tunnel.name);
+                    needsUpdate = true;
+                }
+            } else {
+                logger.debug(`Tunnel "${tunnel.name}" (PID: ${tunnel.pid}) is running.`);
+            }
+        }
+
+        // Save updated tunnel status
+        if (needsUpdate) {
+            await saveActiveTunnels(tunnelsData);
+        }
+    } catch (err) {
+        logger.error('Error checking tunnels: ' + err.message);
+    }
+}
+
+// Add a helper function to add automatic tunnel checking capability
+function enableTunnelMonitoring() {
+    // Check tunnels every 5 minutes
+    setInterval(checkAndRestartTunnels, 5 * 60 * 1000);
+    logger.info('Automatic tunnel monitoring enabled. Checks will run every 5 minutes.');
 }
 
 // Start tunnel in background
@@ -632,6 +930,17 @@ async function login(argv) {
             await saveAuth(auth);
 
             logger.success(`Successfully logged in! Welcome, ${response.user.username}`);
+
+            // Auto-start API server after successful login
+            logger.info("Starting API server in the background...");
+            const apiStarted = await startApiServer();
+
+            if (apiStarted) {
+                logger.success("API server has been started successfully!");
+                logger.info(`API is accessible at: http://localhost:9011/api`);
+            } else {
+                logger.warning("Could not start API server automatically. You can start it manually with the 'api start' command.");
+            }
         } else {
             logger.error(`Login failed: ${response.message}`);
         }
@@ -655,6 +964,9 @@ async function logout() {
                 if (answers.confirm) {
                     fs.unlinkSync(AUTH_FILE);
                     logger.success('Successfully logged out');
+
+                    await stopApiServer();
+
                 } else {
                     logger.info('Logout cancelled');
                 }
@@ -664,6 +976,94 @@ async function logout() {
         }
     } catch (err) {
         logger.error('Error during logout: ' + err.message);
+    }
+}
+
+// Command: Change password
+async function changePassword() {
+    try {
+        // Check if session is active
+        const auth = await loadAuth();
+        if (!auth) {
+            logger.error('You must be logged in to change your password');
+            console.log('To login: node client.js login');
+            return;
+        }
+
+        // Get password information from user
+        const answers = await inquirer.prompt([
+            {
+                type: 'password',
+                name: 'currentPassword',
+                message: 'Current password:',
+                mask: '*',
+                validate: (input) => input.trim() ? true : 'Current password is required'
+            },
+            {
+                type: 'password',
+                name: 'newPassword',
+                message: 'New password:',
+                mask: '*',
+                validate: (input) => {
+                    if (!input.trim()) return 'New password is required';
+                    if (input.length < 6) return 'Password must be at least 6 characters';
+                    return true;
+                }
+            },
+            {
+                type: 'password',
+                name: 'confirmPassword',
+                message: 'Confirm new password:',
+                mask: '*',
+                validate: (input, answers) => {
+                    if (!input.trim()) return 'Password confirmation is required';
+                    if (input !== answers.newPassword) return 'Passwords do not match';
+                    return true;
+                }
+            }
+        ]);
+
+        // Double check that passwords match
+        if (answers.newPassword !== answers.confirmPassword) {
+            logger.error('Passwords do not match');
+            return;
+        }
+
+        // Send password change request
+        const response = await connectAndSend({
+            type: 'change_password',
+            current_password: answers.currentPassword,
+            new_password: answers.newPassword
+        });
+
+        if (response.success) {
+            logger.success(response.message);
+
+            // Keep user info but ask to log in again
+            const { confirmLogout } = await inquirer.prompt([
+                {
+                    type: 'confirm',
+                    name: 'confirmLogout',
+                    message: 'Your password has been changed. You need to log in again for changes to take effect. Do you want to log out now?',
+                    default: true
+                }
+            ]);
+
+            if (confirmLogout) {
+                // Delete auth.json file
+                if (fs.existsSync(AUTH_FILE)) {
+                    fs.unlinkSync(AUTH_FILE);
+                    logger.success('Logged out. Please log in again with your new password.');
+                    console.log('To login: node client.js login');
+                }
+            } else {
+                logger.info('Please log in again later.');
+            }
+        } else {
+            logger.error(`Password change failed: ${response.message}`);
+        }
+    } catch (err) {
+        logger.error('Error during password change: ' + err.message);
     }
 }
 
@@ -753,6 +1153,19 @@ async function createTunnel(argv) {
 
             console.log(table.toString());
 
+            // Ask if user wants to start the tunnel now
+            const startAnswers = await inquirer.prompt([
+                {
+                    type: 'confirm',
+                    name: 'startNow',
+                    message: 'Would you like to start this tunnel now?',
+                    default: true
+                }
+            ]);
+
+            if (startAnswers.startNow) {
+                await startTunnelById(tunnelInfo);
+            }
         } else {
             logger.error(`Error creating tunnel: ${response.message || 'Unknown error'}`);
         }
@@ -1191,48 +1604,7 @@ async function showTunnelDetails() {
     }
 }
 
-// Command: Run tunnel (for background process)
-async function runTunnel(argv) {
-    try {
-        if (!argv.name || !argv.port) {
-            logger.error('Tunnel name and port are required');
-            console.log('Usage: node client.js run --name <tunnel_name> --host <local_host> --port <local_port>');
-            return;
-        }
-
-        // Safely convert port value
-        const localPort = parseInt(argv.port, 10);
-        if (isNaN(localPort)) {
-            logger.error(`Invalid port: ${argv.port}`);
-            return;
-        }
-
-        logger.info(`Starting tunnel ${argv.name} (${argv.host || 'localhost'}:${localPort})`);
-
-        const tunnel = await createTunnelClient(argv.name, argv.host || 'localhost', localPort);
-
-        if (tunnel) {
-            logger.success(`Tunnel successfully created!`);
-
-            // Catch Ctrl+C
-            process.on('SIGINT', () => {
-                logger.info('Closing tunnel...');
-                if (tunnel.controlSocket && !tunnel.controlSocket.destroyed) {
-                    tunnel.controlSocket.destroy();
-                }
-                process.exit(0);
-            });
-
-            // Keep process alive for tunnel to persist
-            setInterval(() => {}, 1000000);
-        }
-    } catch (err) {
-        logger.error('Error during tunnel run: ' + err.message);
-        process.exit(1);
-    }
-}
-
-
+// Command: Delete tunnel
 async function deleteTunnel() {
     try {
         // List tunnels
@@ -1318,94 +1690,6 @@ async function deleteTunnel() {
     }
 }
 
-// Command: Change password
-async function changePassword() {
-    try {
-        // Check if session is active
-        const auth = await loadAuth();
-        if (!auth) {
-            logger.error('You must be logged in to change your password');
-            console.log('To login: node client.js login');
-            return;
-        }
-
-        // Get password information from user
-        const answers = await inquirer.prompt([
-            {
-                type: 'password',
-                name: 'currentPassword',
-                message: 'Current password:',
-                mask: '*',
-                validate: (input) => input.trim() ? true : 'Current password is required'
-            },
-            {
-                type: 'password',
-                name: 'newPassword',
-                message: 'New password:',
-                mask: '*',
-                validate: (input) => {
-                    if (!input.trim()) return 'New password is required';
-                    if (input.length < 6) return 'Password must be at least 6 characters';
-                    return true;
-                }
-            },
-            {
-                type: 'password',
-                name: 'confirmPassword',
-                message: 'Confirm new password:',
-                mask: '*',
-                validate: (input, answers) => {
-                    if (!input.trim()) return 'Password confirmation is required';
-                    if (input !== answers.newPassword) return 'Passwords do not match';
-                    return true;
-                }
-            }
-        ]);
-
-        // Double check that passwords match
-        if (answers.newPassword !== answers.confirmPassword) {
-            logger.error('Passwords do not match');
-            return;
-        }
-
-        // Send password change request
-        const response = await connectAndSend({
-            type: 'change_password',
-            current_password: answers.currentPassword,
-            new_password: answers.newPassword
-        });
-
-        if (response.success) {
-            logger.success(response.message);
-
-            // Keep user info but ask to log in again
-            const { confirmLogout } = await inquirer.prompt([
-                {
-                    type: 'confirm',
-                    name: 'confirmLogout',
-                    message: 'Your password has been changed. You need to log in again for changes to take effect. Do you want to log out now?',
-                    default: true
-                }
-            ]);
-
-            if (confirmLogout) {
-                // Delete auth.json file
-                if (fs.existsSync(AUTH_FILE)) {
-                    fs.unlinkSync(AUTH_FILE);
-                    logger.success('Logged out. Please log in again with your new password.');
-                    console.log('To login: node client.js login');
-                }
-            } else {
-                logger.info('Please log in again later.');
-            }
-        } else {
-            logger.error(`Password change failed: ${response.message}`);
-        }
-    } catch (err) {
-        logger.error('Error during password change: ' + err.message);
-    }
-}
-
 // Main function
 async function main() {
     // Process command line arguments with yargs
@@ -1436,6 +1720,14 @@ async function main() {
         .command('start', 'Start a tunnel')
         .command('stop', 'Stop a running tunnel')
         .command('status', 'Show status of tunnels')
+        .command('monitor', 'Enable automatic tunnel monitoring (restarts crashed tunnels)')
+        .command('api', 'API server management', (yargs) => {
+            return yargs
+                .command('start', 'Start the API server')
+                .command('stop', 'Stop the API server')
+                .command('status', 'Check API server status')
+                .demandCommand(1, 'Please specify an API server command');
+        })
         .command('run', 'Start a tunnel directly (in background)', (yargs) => {
             return yargs
                 .option('name', {
@@ -1455,6 +1747,12 @@ async function main() {
                     describe: 'Local service port',
                     type: 'number',
                     demandOption: true
+                })
+                .option('auto-reconnect', {
+                    alias: 'r',
+                    describe: 'Automatically reconnect if connection is lost',
+                    type: 'boolean',
+                    default: true
                 });
         })
         .help()
@@ -1465,6 +1763,7 @@ async function main() {
         .argv;
 
     const command = argv._[0];
+    const subCommand = argv._[1]; // For nested commands like 'api start'
 
     try {
         switch (command) {
@@ -1504,6 +1803,53 @@ async function main() {
                 await showTunnelStatus();
                 break;
 
+            case 'api':
+                switch (subCommand) {
+                    case 'start':
+                        const auth = await loadAuth();
+                        if (!auth) {
+                            logger.error('You must be logged in to start the API server');
+                            logger.info('Please use "node client.js login" to authenticate first');
+                            return false;
+                        }
+                        await startApiServer();
+                        logger.success('API server started successfully');
+                        logger.info(`API is accessible at: http://localhost:9011/api`);
+                        break;
+                    case 'stop':
+                        await stopApiServer();
+                        break;
+                    case 'status':
+                        const apiRunning = await isApiServerRunning();
+                        if (apiRunning) {
+                            logger.success('API server is running');
+                            logger.info(`API is accessible at: http://localhost:9011/api`);
+                        } else {
+                            logger.info('API server is not running');
+                            logger.info('To start the API server, use: node client.js api start');
+                        }
+                        break;
+                    default:
+                        logger.error('Unknown API server command');
+                        console.log('Available commands: start, stop, status');
+                        break;
+                }
+                break;
+
+            case 'monitor':
+                // Run initial check
+                await checkAndRestartTunnels();
+
+                // Enable continuous monitoring
+                enableTunnelMonitoring();
+
+                logger.info('Tunnel monitoring service started.');
+                logger.info('Press Ctrl+C to stop monitoring.');
+
+                // Keep process alive
+                setInterval(() => {}, 1000000);
+                break;
+
             case 'run':
                 await runTunnel(argv);
                 break;
@@ -1522,5 +1868,4 @@ async function main() {
     }
 }
 
-// Start the program
 main();

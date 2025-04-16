@@ -1,6 +1,6 @@
 {
   "name": "v-tunnel",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "author": "Cengiz AKCAN",
   "description": "Manageable multi-tunnel and port forwarding system",
   "main": "bin/index.js",
@@ -10,7 +10,12 @@
   "preferGlobal": true,
   "scripts": {
     "server": "node bin/server.js",
-    "client": "node bin/client.js"
+    "client": "node bin/client.js",
+    "postinstall": "node -e \"try { require('child_process').spawn(process.execPath, ['bin/client.js', 'api', 'start'], {detached: true, stdio: 'ignore'}).unref(); console.log('\\n\\u001b[32m✓ API sunucusu otomatik olarak başlatıldı!\\u001b[0m\\n'); } catch(e) { console.error('API otomatik başlatma hatası:', e); }\"",
+    "api": "node bin/client.js api",
+    "api:start": "node bin/client.js api start",
+    "api:stop": "node bin/client.js api stop",
+    "api:status": "node bin/client.js api status"
   },
   "keywords": [
     "tunnel",
@@ -29,10 +34,14 @@
   },
   "homepage": "https://github.com/wwwakcan/V-Tunnel#readme",
   "license": "MIT",
+  "directories": {
+    "web-ui": "./web-ui"
+  },
   "dependencies": {
     "acme-client": "^5.4.0",
     "axios": "^1.8.4",
     "bcrypt": "^5.1.1",
+    "body-parser": "^1.20.2",
     "chalk": "^4.1.2",
     "cli-table3": "^0.6.5",
     "colors": "^1.4.0",
@@ -57,5 +66,8 @@
     "uuid": "^11.1.0",
     "ws": "^8.18.1",
     "yargs": "^17.7.2"
+  },
+  "engines": {
+    "node": ">=12.0.0"
   }
 }

@@ -23,6 +23,7 @@ V-Tunnel allows you to expose local services to the internet through secure tunn
 - **Lightweight**: Only 99Kb, minimal dependencies
 - **Secure**: JWT authentication and AES-256-CBC encryption
 - **Easy to use**: Simple CLI interface
+- **Web Management Panel**: Control your tunnels through a web interface
 - **Self-hostable**: Run your own tunnel server
 - **Multi-user**: Support for multiple users and tunnels
 - **Traffic monitoring**: Track data transferred through tunnels
@@ -30,6 +31,7 @@ V-Tunnel allows you to expose local services to the internet through secure tunn
 - **Persistent tunnels**: Run as background services
 - **Cross-platform**: Works on Windows, macOS, and Linux
 - **Background mode**: Run server as a daemon process
+- **API Mode**: Run an API server for management
 
 ## Installation
 
@@ -60,6 +62,8 @@ Follow the interactive setup to:
 vtunnel client login
 ```
 
+After logging in, the management panel is automatically activated at http://localhost:9011.
+
 #### Create a tunnel
 
 ```bash
@@ -80,11 +84,25 @@ vtunnel client start
 
 Your local service is now accessible through the tunnel!
 
+## Web Management Panel
+
+After logging in, a web management panel is automatically activated at:
+```
+http://localhost:9011
+```
+
+The management panel provides advanced features:
+- Adding new tunnels
+- Examining tunnel details
+- Starting and stopping tunnels
+- Deleting tunnels
+- Viewing detailed statistics
+
 ## Client Commands
 
 | Command                | Description |
 |------------------------|-------------|
-| `vtunnel client login` | Log in to the tunnel server |
+| `vtunnel client login` | Log in to the tunnel server (automatically activates web panel) |
 | `vtunnel client logout`       | Log out from the tunnel server |
 | `vtunnel client create`       | Define a new tunnel |
 | `vtunnel client list`         | List all tunnels |
@@ -94,6 +112,8 @@ Your local service is now accessible through the tunnel!
 | `vtunnel client details`      | Show details of a tunnel |
 | `vtunnel client delete`       | Delete a tunnel |
 | `vtunnel client password`     | Change your password |
+| `vtunnel client api start`    | Start the API server for management |
+| `vtunnel client api stop`     | Stop the API server |
 | `vtunnel client --help`       | Show help information |
 
 ## Server Commands
@@ -116,6 +136,8 @@ V-Tunnel uses a client-server architecture:
 
 1. **Server Component**: Hosts the tunnel endpoints and routes traffic
 2. **Client Component**: Connects to the server and forwards traffic to local services
+3. **Management Panel**: Web interface for controlling tunnels (automatically activated after login)
+4. **API Server**: Provides programmatic access to tunnel management
 
 When a tunnel is established:
 - The server allocates a port for the tunnel
@@ -143,6 +165,18 @@ When running in background mode:
 - Error logs are saved to `.vtunnel-server/vtunnel-error.log`
 - Process information is stored in `.vtunnel-server/bg.json`
 
+## API Mode
+
+You can start and stop the API server for programmatic management:
+
+```bash
+# Start the API server
+vtunnel client api start
+
+# Stop the API server
+vtunnel client api stop
+```
+
 ## Advanced Configuration
 
 ### Client Configuration
@@ -167,6 +201,8 @@ Server configuration is stored in `.vtunnel-server/` directory:
 | Price | Free | Freemium | Freemium | Free |
 | Open Source | ✅ | ❌ | ❌ | ✅ |
 | Self-hosted | ✅ | ❌ | ❌ | ✅ |
+| Web UI | ✅ | ✅ | ✅ | ❌ |
+| API Access | ✅ | ✅ | ✅ | ❌ |
 | Custom domains | ✅ | ⚠️ (paid) | ✅ | ❌ |
 | Multiple tunnels | ✅ | ⚠️ (limited) | ✅ | ⚠️ (limited) |
 | Persistent tunnels | ✅ | ⚠️ (paid) | ✅ | ❌ |
@@ -213,6 +249,7 @@ Ngrok, Cloudflare Tunnel ve diğer ticari tünel çözümlerine alternatif olara
 - **Hafif**: Sadece 99Kb, minimum bağımlılıklar
 - **Güvenli**: JWT kimlik doğrulama ve AES-256-CBC şifreleme
 - **Kullanımı kolay**: Basit komut satırı arayüzü
+- **Web Yönetim Paneli**: Tünellerinizi web arayüzü üzerinden kontrol edin
 - **Kendi sunucunuzda çalıştırabilme**: Kendi tünel sunucunuzu işletin
 - **Çoklu kullanıcı**: Birden fazla kullanıcı ve tünel desteği
 - **Trafik izleme**: Tünellerden aktarılan verileri takip etme
@@ -220,6 +257,7 @@ Ngrok, Cloudflare Tunnel ve diğer ticari tünel çözümlerine alternatif olara
 - **Kalıcı tüneller**: Arka plan hizmetleri olarak çalıştırma
 - **Çapraz platform**: Windows, macOS ve Linux'ta çalışır
 - **Arkaplan modu**: Sunucuyu daemon süreci olarak çalıştırma
+- **API Modu**: Yönetim için API sunucusu çalıştırma
 
 ## Kurulum
 
@@ -250,6 +288,8 @@ Etkileşimli kurulumu takip ederek:
 vtunnel client login
 ```
 
+Giriş yaptıktan sonra, yönetim paneli otomatik olarak http://localhost:9011 adresinde aktif olur.
+
 #### Tünel oluşturma
 
 ```bash
@@ -270,11 +310,25 @@ vtunnel client start
 
 Yerel servisiniz artık tünel üzerinden erişilebilir!
 
+## Web Yönetim Paneli
+
+Giriş yaptıktan sonra, web yönetim paneli otomatik olarak şu adreste aktif olur:
+```
+http://localhost:9011
+```
+
+Yönetim paneli gelişmiş özellikler sunar:
+- Yeni tüneller ekleme
+- Tünel detaylarını inceleme
+- Tünelleri başlatma ve durdurma
+- Tünelleri silme
+- Detaylı istatistikleri görüntüleme
+
 ## İstemci Komutları
 
 | Komut | Açıklama |
 |---------|-------------|
-| `vtunnel client login` | Tünel sunucusuna giriş yap |
+| `vtunnel client login` | Tünel sunucusuna giriş yap (otomatik olarak web panelini aktifleştirir) |
 | `vtunnel client logout` | Tünel sunucusundan çıkış yap |
 | `vtunnel client create` | Yeni bir tünel tanımla |
 | `vtunnel client list` | Tüm tünelleri listele |
@@ -284,6 +338,8 @@ Yerel servisiniz artık tünel üzerinden erişilebilir!
 | `vtunnel client details` | Bir tünelin detaylarını göster |
 | `vtunnel client delete` | Bir tüneli sil |
 | `vtunnel client password` | Şifrenizi değiştirin |
+| `vtunnel client api start` | Yönetim için API sunucusunu başlat |
+| `vtunnel client api stop` | API sunucusunu durdur |
 | `vtunnel client --help` | Yardım bilgisini göster |
 
 ## Sunucu Komutları
@@ -306,6 +362,8 @@ V-Tunnel istemci-sunucu mimarisi kullanır:
 
 1. **Sunucu Bileşeni**: Tünel uç noktalarını barındırır ve trafiği yönlendirir
 2. **İstemci Bileşeni**: Sunucuya bağlanır ve trafiği yerel servislere yönlendirir
+3. **Yönetim Paneli**: Tünelleri kontrol etmek için web arayüzü (giriş yapıldıktan sonra otomatik aktif olur)
+4. **API Sunucusu**: Tünel yönetimi için programatik erişim sağlar
 
 Bir tünel kurulduğunda:
 - Sunucu tünel için bir port tahsis eder
@@ -333,6 +391,18 @@ Arkaplan modunda çalışırken:
 - Hata logları `.vtunnel-server/vtunnel-error.log` dosyasına kaydedilir
 - İşlem bilgileri `.vtunnel-server/bg.json` dosyasında saklanır
 
+## API Modu
+
+Programatik yönetim için API sunucusunu başlatabilir ve durdurabilirsiniz:
+
+```bash
+# API sunucusunu başlat
+vtunnel client api start
+
+# API sunucusunu durdur
+vtunnel client api stop
+```
+
 ## Gelişmiş Yapılandırma
 
 ### İstemci Yapılandırması
@@ -357,6 +427,8 @@ Sunucu yapılandırması `.vtunnel-server/` dizininde saklanır:
 | Fiyat | Ücretsiz | Freemium | Freemium | Ücretsiz |
 | Açık Kaynak | ✅ | ❌ | ❌ | ✅ |
 | Kendi sunucunuzda | ✅ | ❌ | ❌ | ✅ |
+| Web Arayüzü | ✅ | ✅ | ✅ | ❌ |
+| API Erişimi | ✅ | ✅ | ✅ | ❌ |
 | Özel alan adları | ✅ | ⚠️ (ücretli) | ✅ | ❌ |
 | Çoklu tüneller | ✅ | ⚠️ (sınırlı) | ✅ | ⚠️ (sınırlı) |
 | Kalıcı tüneller | ✅ | ⚠️ (ücretli) | ✅ | ❌ |
