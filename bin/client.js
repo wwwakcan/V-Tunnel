@@ -1,5 +1,23 @@
+#!/usr/bin/env node
 
-// client.js - Enhanced Tunnel Routing Client with JWT Authentication
+/**
+ * V-Tunnel - Lightweight Tunnel Routing Solution
+ *
+ * A 100% free and open-source alternative to commercial tunneling solutions
+ * like Ngrok, Cloudflare Tunnel, and others.
+ *
+ * @file        client.js
+ * @description Enhanced Tunnel Routing Client with JWT Authentication
+ * @author      Cengiz AKCAN <me@cengizakcan.com>
+ * @copyright   Copyright (c) 2025, Cengiz AKCAN
+ * @license     MIT
+ * @version     1.0.2
+ * @link        https://github.com/wwwakcan/V-Tunnel
+ *
+ * This software is released under the MIT License.
+ * https://opensource.org/licenses/MIT
+ */
+
 'use strict';
 
 const net = require('net');
