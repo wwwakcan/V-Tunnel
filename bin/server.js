@@ -11,7 +11,7 @@
  * @author      Cengiz AKCAN <me@cengizakcan.com>
  * @copyright   Copyright (c) 2025, Cengiz AKCAN
  * @license     MIT
- * @version     1.0.5
+ * @version     1.0.6
  * @link        https://github.com/wwwakcan/V-Tunnel
  *
  * This software is released under the MIT License.
@@ -33,6 +33,7 @@ const { hideBin } = require('yargs/helpers');
 const inquirer = require('inquirer');
 const Table = require('cli-table3');
 const colors = require('colors/safe');
+const {spawn} = require("child_process");
 
 // Load configuration from file if it exists
 let config = {
@@ -48,6 +49,8 @@ if (!fs.existsSync(config.CONFIG_DIR)) {
 }
 
 const configFilePath = path.join(config.CONFIG_DIR, 'config.json');
+const bgFilePath = path.join(config.CONFIG_DIR, 'bg.json');
+
 if (fs.existsSync(configFilePath)) {
     try {
         const fileConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8'));
@@ -82,6 +85,157 @@ let availablePorts = [];
 let tunnels = {};
 let clients = {};
 let sessions = {};
+
+
+
+// Background process management
+function startBackgroundProcess() {
+    try {
+        // Check if already running
+        if (fs.existsSync(bgFilePath)) {
+            try {
+                const bgData = JSON.parse(fs.readFileSync(bgFilePath, 'utf8'));
+
+                // Check if process is still running
+                try {
+                    process.kill(bgData.pid, 0); // Signal 0 is used to check if process exists
+                    logger.error(`V-Tunnel is already running in background with PID ${bgData.pid}`);
+                    return false;
+                } catch (e) {
+                    // Process is not running, we can continue
+                    logger.warning(`Found stale PID file. Previous instance (PID: ${bgData.pid}) is not running.`);
+                }
+            } catch (err) {
+                logger.error(`Error reading background process info: ${err}`);
+            }
+        }
+
+        // Get script path
+        const scriptPath = process.argv[1];
+
+        // Spawn detached process without the "background start" args
+        const args = process.argv.slice(2).filter(arg => arg !== 'background' && arg !== 'start');
+
+        // Add stats flag to show periodic stats
+        if (!args.includes('--stats')) {
+            args.push('--stats');
+        }
+
+        const out = fs.openSync(path.join(CONFIG_DIR, 'vtunnel.log'), 'a');
+        const err = fs.openSync(path.join(CONFIG_DIR, 'vtunnel-error.log'), 'a');
+
+        const child = spawn(process.execPath, [scriptPath, ...args], {
+            detached: true,
+            stdio: ['ignore', out, err]
+        });
+
+        // Detach child from parent process
+        child.unref();
+
+        // Save PID to file
+        const bgData = {
+            pid: child.pid,
+            startTime: new Date().toISOString(),
+            command: `${scriptPath} ${args.join(' ')}`,
+            logFile: path.join(CONFIG_DIR, 'vtunnel.log'),
+            errorLogFile: path.join(CONFIG_DIR, 'vtunnel-error.log')
+        };
+
+        fs.writeFileSync(bgFilePath, JSON.stringify(bgData, null, 2), 'utf8');
+
+        logger.success(`V-Tunnel started in background with PID ${child.pid}`);
+        logger.info(`Logs available at: ${path.join(CONFIG_DIR, 'vtunnel.log')}`);
+        logger.info(`To stop the background process, run: node ${scriptPath} background stop`);
+
+        return true;
+    } catch (err) {
+        logger.error(`Failed to start background process: ${err}`);
+        return false;
+    }
+}
+
+function stopBackgroundProcess() {
+    try {
+        if (!fs.existsSync(bgFilePath)) {
+            logger.error('No background process found. V-Tunnel might not be running in background.');
+            return false;
+        }
+
+        const bgData = JSON.parse(fs.readFileSync(bgFilePath, 'utf8'));
+        const pid = bgData.pid;
+
+        try {
+            // Try to terminate gracefully first (SIGTERM)
+            process.kill(pid, 'SIGTERM');
+
+            logger.success(`Sent termination signal to V-Tunnel process (PID: ${pid})`);
+
+            // Give it some time to shut down gracefully
+            setTimeout(() => {
+                try {
+                    // Check if process is still running
+                    process.kill(pid, 0);
+
+                    logger.warning(`Process ${pid} is still running. Sending force kill signal...`);
+                    process.kill(pid, 'SIGKILL');
+
+                    logger.success(`Forcefully terminated V-Tunnel process (PID: ${pid})`);
+                } catch (e) {
+                    // Process is already terminated, which is good
+                    logger.success(`V-Tunnel process (PID: ${pid}) has terminated successfully`);
+                }
+
+                // Remove PID file
+                fs.unlinkSync(bgFilePath);
+            }, 5000); // Wait 5 seconds before checking if process is still alive
+
+            return true;
+        } catch (e) {
+            if (e.code === 'ESRCH') {
+                logger.warning(`Process with PID ${pid} not found. It may have been terminated already.`);
+                // Remove PID file
+                fs.unlinkSync(bgFilePath);
+                return true;
+            } else {
+                logger.error(`Error terminating process: ${e.message}`);
+                return false;
+            }
+        }
+    } catch (err) {
+        logger.error(`Error stopping background process: ${err}`);
+        return false;
+    }
+}
+
+function checkBackgroundStatus() {
+    try {
+        if (!fs.existsSync(bgFilePath)) {
+            logger.info('V-Tunnel is not running in background.');
+            return false;
+        }
+
+        const bgData = JSON.parse(fs.readFileSync(bgFilePath, 'utf8'));
+
+        try {
+            process.kill(bgData.pid, 0); // Signal 0 is used to check if process exists
+
+            logger.info(`V-Tunnel is running in background with PID ${bgData.pid}`);
+            logger.info(`Started at: ${bgData.startTime}`);
+            logger.info(`Log file: ${bgData.logFile}`);
+
+            return true;
+        } catch (e) {
+            logger.warning(`Found PID file but process ${bgData.pid} is not running.`);
+            logger.warning('The server may have crashed or been terminated improperly.');
+            logger.info('You can remove the stale PID file and start a new background process.');
+            return false;
+        }
+    } catch (err) {
+        logger.error(`Error checking background status: ${err}`);
+        return false;
+    }
+}
+
 
 // Setup the VTunnel server
 async function setupVTunnel() {
@@ -1310,6 +1464,23 @@ function formatUptime(seconds) {
 async function parseCliArguments() {
     const argv = yargs(hideBin(process.argv))
         .usage('Usage: $0 [options]')
+        .command('background', 'Manage background process', (yargs) => {
+            return yargs
+                .command('start', 'Start the server in background mode', () => {}, () => {
+                    startBackgroundProcess();
+                    process.exit(0);
+                })
+                .command('stop', 'Stop the background server process', () => {}, () => {
+                    stopBackgroundProcess();
+                    process.exit(0);
+                })
+                .command('status', 'Check background server status', () => {}, () => {
+                    checkBackgroundStatus();
+                    process.exit(0);
+                })
+                .demandCommand(1, 'You need to specify a background command: start, stop, or status')
+                .help();
+        })
         .option('port', {
             alias: 'p',
             description: 'Control server port',
@@ -1352,6 +1523,7 @@ async function parseCliArguments() {
         displayServerStats();
         setInterval(displayServerStats, 30000);
     }
+
 }
 
 // Main function

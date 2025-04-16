@@ -29,6 +29,7 @@ V-Tunnel allows you to expose local services to the internet through secure tunn
 - **No rate limits**: Unlike most commercial solutions
 - **Persistent tunnels**: Run as background services
 - **Cross-platform**: Works on Windows, macOS, and Linux
+- **Background mode**: Run server as a daemon process
 
 ## Installation
 
@@ -100,6 +101,9 @@ Your local service is now accessible through the tunnel!
 | Command                              | Description |
 |--------------------------------------|-------------|
 | `vtunnel server`                     | Start the tunnel server |
+| `vtunnel server background start`    | Start the tunnel server in background mode |
+| `vtunnel server background stop`     | Stop the background tunnel server |
+| `vtunnel server background status`   | Check status of the background server process |
 | `vtunnel server --port=9012`         | Specify control server port |
 | `vtunnel server --range-start=51200` | Set tunnel port range start |
 | `vtunnel server --range-end=52200`   | Set tunnel port range end |
@@ -119,6 +123,26 @@ When a tunnel is established:
 - External traffic to the server's allocated port is forwarded to the client
 - The client forwards traffic to the local service
 
+## Running as a Background Service
+
+You can run V-Tunnel server as a background service:
+
+```bash
+# Start the server in background mode
+vtunnel server background start
+
+# Check if the server is running
+vtunnel server background status
+
+# Stop the background server
+vtunnel server background stop
+```
+
+When running in background mode:
+- Server logs are saved to `.vtunnel-server/vtunnel.log`
+- Error logs are saved to `.vtunnel-server/vtunnel-error.log`
+- Process information is stored in `.vtunnel-server/bg.json`
+
 ## Advanced Configuration
 
 ### Client Configuration
@@ -132,6 +156,9 @@ Client configuration is stored in `.vtunnel-client/` directory:
 Server configuration is stored in `.vtunnel-server/` directory:
 - `config.json`: Stores server configuration
 - `vtunnel.db`: SQLite database for users and tunnels
+- `bg.json`: Background process information (PID and status)
+- `vtunnel.log`: Server logs when running in background mode
+- `vtunnel-error.log`: Error logs when running in background mode
 
 ## Comparison with Alternatives
 
@@ -143,6 +170,7 @@ Server configuration is stored in `.vtunnel-server/` directory:
 | Custom domains | ✅ | ⚠️ (paid) | ✅ | ❌ |
 | Multiple tunnels | ✅ | ⚠️ (limited) | ✅ | ⚠️ (limited) |
 | Persistent tunnels | ✅ | ⚠️ (paid) | ✅ | ❌ |
+| Background mode | ✅ | ✅ | ✅ | ❌ |
 | Traffic metrics | ✅ | ✅ | ✅ | ❌ |
 | Size | 99Kb | ~15MB | ~10MB | ~5MB |
 
@@ -191,6 +219,7 @@ Ngrok, Cloudflare Tunnel ve diğer ticari tünel çözümlerine alternatif olara
 - **Limit yok**: Çoğu ticari çözümün aksine
 - **Kalıcı tüneller**: Arka plan hizmetleri olarak çalıştırma
 - **Çapraz platform**: Windows, macOS ve Linux'ta çalışır
+- **Arkaplan modu**: Sunucuyu daemon süreci olarak çalıştırma
 
 ## Kurulum
 
@@ -262,6 +291,9 @@ Yerel servisiniz artık tünel üzerinden erişilebilir!
 | Komut                                | Açıklama |
 |--------------------------------------|-------------|
 | `vtunnel server`                     | Tünel sunucusunu başlat |
+| `vtunnel server background start`    | Tünel sunucusunu arkaplanda başlat |
+| `vtunnel server background stop`     | Arkaplanda çalışan tünel sunucusunu durdur |
+| `vtunnel server background status`   | Arkaplanda çalışan sunucu sürecinin durumunu kontrol et |
 | `vtunnel server --port=9012`         | Kontrol sunucusu portunu belirt |
 | `vtunnel server --range-start=51200` | Tünel port aralığı başlangıcını ayarla |
 | `vtunnel server --range-end=52200`   | Tünel port aralığı sonunu ayarla |
@@ -281,6 +313,26 @@ Bir tünel kurulduğunda:
 - Sunucunun tahsis edilen portuna gelen dış trafik istemciye yönlendirilir
 - İstemci trafiği yerel servise yönlendirir
 
+## Arkaplan Servisi Olarak Çalıştırma
+
+V-Tunnel sunucusunu bir arkaplan servisi olarak çalıştırabilirsiniz:
+
+```bash
+# Sunucuyu arkaplanda başlat
+vtunnel server background start
+
+# Sunucunun çalışıp çalışmadığını kontrol et
+vtunnel server background status
+
+# Arkaplan sunucusunu durdur
+vtunnel server background stop
+```
+
+Arkaplan modunda çalışırken:
+- Sunucu logları `.vtunnel-server/vtunnel.log` dosyasına kaydedilir
+- Hata logları `.vtunnel-server/vtunnel-error.log` dosyasına kaydedilir
+- İşlem bilgileri `.vtunnel-server/bg.json` dosyasında saklanır
+
 ## Gelişmiş Yapılandırma
 
 ### İstemci Yapılandırması
@@ -294,6 +346,9 @@ Bir tünel kurulduğunda:
 Sunucu yapılandırması `.vtunnel-server/` dizininde saklanır:
 - `config.json`: Sunucu yapılandırmasını saklar
 - `vtunnel.db`: Kullanıcılar ve tüneller için SQLite veritabanı
+- `bg.json`: Arkaplan işlem bilgisi (PID ve durum)
+- `vtunnel.log`: Arkaplanda çalışırken sunucu logları
+- `vtunnel-error.log`: Arkaplanda çalışırken hata logları
 
 ## Alternatiflerle Karşılaştırma
 
@@ -305,6 +360,7 @@ Sunucu yapılandırması `.vtunnel-server/` dizininde saklanır:
 | Özel alan adları | ✅ | ⚠️ (ücretli) | ✅ | ❌ |
 | Çoklu tüneller | ✅ | ⚠️ (sınırlı) | ✅ | ⚠️ (sınırlı) |
 | Kalıcı tüneller | ✅ | ⚠️ (ücretli) | ✅ | ❌ |
+| Arkaplan modu | ✅ | ✅ | ✅ | ❌ |
 | Trafik metrikleri | ✅ | ✅ | ✅ | ❌ |
 | Boyut | 99Kb | ~15MB | ~10MB | ~5MB |
 

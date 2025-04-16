@@ -11,7 +11,7 @@
  * @author      Cengiz AKCAN <me@cengizakcan.com>
  * @copyright   Copyright (c) 2025, Cengiz AKCAN
  * @license     MIT
- * @version     1.0.5
+ * @version     1.0.6
  * @link        https://github.com/wwwakcan/V-Tunnel
  *
  * This software is released under the MIT License.
@@ -47,7 +47,6 @@ switch (command) {
     case 'server':
         // Remove 'server' from args and run server.js
         const serverArgs = args.slice(1);
-        console.log('Starting server with args:', serverArgs);
 
         // Reset process.argv to pass to server.js
         process.argv = [process.argv[0], process.argv[1], ...serverArgs];
