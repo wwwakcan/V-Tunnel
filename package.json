@@ -1,6 +1,6 @@
 {
   "name": "v-tunnel",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "author": "Cengiz AKCAN",
   "description": "Manageable multi-tunnel and port forwarding system",
   "main": "bin/index.js",
@@ -10,8 +10,7 @@
   "preferGlobal": true,
   "scripts": {
     "server": "node bin/server.js",
-    "client": "node bin/client.js",
-    "proxy": "node bin/proxy.js"
+    "client": "node bin/client.js"
   },
   "keywords": [
     "tunnel",
