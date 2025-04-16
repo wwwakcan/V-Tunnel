@@ -1,16 +1,17 @@
 {
   "name": "v-tunnel",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "author": "Cengiz AKCAN",
   "description": "Manageable multi-tunnel and port forwarding system",
-  "main": "bin/client.js",
+  "main": "bin/index.js",
   "bin": {
     "vtunnel": "./bin/index.js"
   },
   "preferGlobal": true,
   "scripts": {
     "server": "node bin/server.js",
-    "client": "node bin/client.js"
+    "client": "node bin/client.js",
+    "proxy": "node bin/proxy.js"
   },
   "keywords": [
     "tunnel",
@@ -38,7 +39,9 @@
     "commander": "^11.1.0",
     "cors": "^2.8.5",
     "express": "^4.21.2",
+    "greenlock-express": "^4.0.3",
     "http": "^0.0.1-security",
+    "http-proxy": "^1.18.1",
     "inquirer": "^8.2.6",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",

@@ -11,7 +11,7 @@
  * @author      Cengiz AKCAN <me@cengizakcan.com>
  * @copyright   Copyright (c) 2025, Cengiz AKCAN
  * @license     MIT
- * @version     1.0.8
+ * @version     1.0.9
  * @link        https://github.com/wwwakcan/V-Tunnel
  *
  * This software is released under the MIT License.
@@ -55,11 +55,23 @@ switch (command) {
         require('./server.js');
         break;
 
+     case 'proxy':
+        // Remove 'server' from args and run server.js
+        const proxyArgs = args.slice(1);
+
+        // Reset process.argv to pass to server.js
+        process.argv = [process.argv[0], process.argv[1], ...proxyArgs];
+
+        // Run the server script
+        require('./proxy.js');
+        break;
+
     default:
         console.log(`Unknown command: ${command}`);
         console.log('');
         console.log('Usage:');
         console.log('  vtunnel client [options]   Start V-Tunnel in client mode');
         console.log('  vtunnel server [options]   Start V-Tunnel in server mode');
+        console.log('  vtunnel proxy [options]    Start V-Tunnel in server mode');
         process.exit(1);
 }

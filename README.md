@@ -30,6 +30,7 @@ V-Tunnel allows you to expose local services to the internet through secure tunn
 - **Persistent tunnels**: Run as background services
 - **Cross-platform**: Works on Windows, macOS, and Linux
 - **Background mode**: Run server as a daemon process
+- **SSL Proxy**: Automatically manage SSL certificates for custom domains
 
 ## Installation
 
@@ -110,12 +111,24 @@ Your local service is now accessible through the tunnel!
 | `vtunnel server --stats`             | Display server stats periodically |
 | `vtunnel server --help`              | Show help information |
 
+## Proxy Commands
+
+| Command                              | Description |
+|--------------------------------------|-------------|
+| `vtunnel proxy`                      | Start the SSL proxy server |
+| `vtunnel proxy setup`                | Configure proxy settings interactively |
+| `vtunnel proxy show`                 | Show current proxy configuration |
+| `vtunnel proxy background start`     | Start proxy in background mode |
+| `vtunnel proxy background stop`      | Stop background proxy server |
+| `vtunnel proxy background status`    | Check status of background proxy |
+
 ## How It Works
 
 V-Tunnel uses a client-server architecture:
 
 1. **Server Component**: Hosts the tunnel endpoints and routes traffic
 2. **Client Component**: Connects to the server and forwards traffic to local services
+3. **Proxy Component**: Routes traffic based on domain names and manages SSL certificates
 
 When a tunnel is established:
 - The server allocates a port for the tunnel
@@ -123,25 +136,47 @@ When a tunnel is established:
 - External traffic to the server's allocated port is forwarded to the client
 - The client forwards traffic to the local service
 
+## SSL Proxy Feature
+
+V-Tunnel includes a powerful SSL proxy that allows you to:
+
+- Use custom domain names for your tunnels
+- Automatically manage SSL certificates
+- Route traffic based on subdomain patterns
+
+For example, running a local service on port 3000 can be accessed through `3000.yourdomain.com` with full SSL support.
+
+The proxy configuration is stored in `.vtunnel-proxy/config.json` and includes:
+- Main domain configuration
+- Subdomain pattern matching
+- SSL certificate management (using Let's Encrypt)
+- Port configurations
+
 ## Running as a Background Service
 
-You can run V-Tunnel server as a background service:
+You can run both V-Tunnel server and proxy as background services:
 
 ```bash
 # Start the server in background mode
 vtunnel server background start
 
-# Check if the server is running
-vtunnel server background status
+# Start the proxy in background mode
+vtunnel proxy background start
 
-# Stop the background server
+# Check status
+vtunnel server background status
+vtunnel proxy background status
+
+# Stop services
 vtunnel server background stop
+vtunnel proxy background stop
 ```
 
 When running in background mode:
 - Server logs are saved to `.vtunnel-server/vtunnel.log`
-- Error logs are saved to `.vtunnel-server/vtunnel-error.log`
-- Process information is stored in `.vtunnel-server/bg.json`
+- Proxy logs are saved to `.vtunnel-proxy/proxy-output.log`
+- Error logs are saved to `.vtunnel-server/vtunnel-error.log` and `.vtunnel-proxy/proxy-error.log`
+- Process information is stored in the respective configuration directories
 
 ## Advanced Configuration
 
@@ -160,6 +195,15 @@ Server configuration is stored in `.vtunnel-server/` directory:
 - `vtunnel.log`: Server logs when running in background mode
 - `vtunnel-error.log`: Error logs when running in background mode
 
+### Proxy Configuration
+
+Proxy configuration is stored in `.vtunnel-proxy/` directory:
+- `config.json`: Stores domain and SSL settings
+- `greenlock/`: Contains SSL certificate information
+- `background.json`: Background process information
+- `proxy-output.log`: Proxy logs when running in background
+- `proxy-error.log`: Error logs for proxy in background
+
 ## Comparison with Alternatives
 
 | Feature | V-Tunnel | Ngrok | Cloudflare Tunnel | LocalTunnel |
@@ -172,6 +216,7 @@ Server configuration is stored in `.vtunnel-server/` directory:
 | Persistent tunnels | ✅ | ⚠️ (paid) | ✅ | ❌ |
 | Background mode | ✅ | ✅ | ✅ | ❌ |
 | Traffic metrics | ✅ | ✅ | ✅ | ❌ |
+| SSL certificates | ✅ | ✅ | ✅ | ❌ |
 | Size | 99Kb | ~15MB | ~10MB | ~5MB |
 
 ## Security Considerations
@@ -220,6 +265,7 @@ Ngrok, Cloudflare Tunnel ve diğer ticari tünel çözümlerine alternatif olara
 - **Kalıcı tüneller**: Arka plan hizmetleri olarak çalıştırma
 - **Çapraz platform**: Windows, macOS ve Linux'ta çalışır
 - **Arkaplan modu**: Sunucuyu daemon süreci olarak çalıştırma
+- **SSL Proxy**: Özel domainler için SSL sertifikalarını otomatik yönetme
 
 ## Kurulum
 
@@ -300,12 +346,24 @@ Yerel servisiniz artık tünel üzerinden erişilebilir!
 | `vtunnel server --stats`             | Sunucu istatistiklerini periyodik olarak göster |
 | `vtunnel server --help`              | Yardım bilgisini göster |
 
+## Proxy Komutları
+
+| Komut                                | Açıklama |
+|--------------------------------------|-------------|
+| `vtunnel proxy`                      | SSL proxy sunucusunu başlat |
+| `vtunnel proxy setup`                | Proxy ayarlarını interaktif olarak yapılandır |
+| `vtunnel proxy show`                 | Mevcut proxy yapılandırmasını göster |
+| `vtunnel proxy background start`     | Proxy'yi arkaplanda başlat |
+| `vtunnel proxy background stop`      | Arkaplanda çalışan proxy'yi durdur |
+| `vtunnel proxy background status`    | Arkaplanda çalışan proxy durumunu kontrol et |
+
 ## Nasıl Çalışır
 
 V-Tunnel istemci-sunucu mimarisi kullanır:
 
 1. **Sunucu Bileşeni**: Tünel uç noktalarını barındırır ve trafiği yönlendirir
 2. **İstemci Bileşeni**: Sunucuya bağlanır ve trafiği yerel servislere yönlendirir
+3. **Proxy Bileşeni**: Domain adlarına göre trafiği yönlendirir ve SSL sertifikalarını yönetir
 
 Bir tünel kurulduğunda:
 - Sunucu tünel için bir port tahsis eder
@@ -313,25 +371,47 @@ Bir tünel kurulduğunda:
 - Sunucunun tahsis edilen portuna gelen dış trafik istemciye yönlendirilir
 - İstemci trafiği yerel servise yönlendirir
 
+## SSL Proxy Özelliği
+
+V-Tunnel, güçlü bir SSL proxy içerir:
+
+- Tünelleriniz için özel domain adları kullanabilirsiniz
+- SSL sertifikaları otomatik olarak yönetilir
+- Trafik subdomain desenlerine göre yönlendirilir
+
+Örneğin, 3000 portunda çalışan yerel bir servise tam SSL desteğiyle `3000.yourdomain.com` üzerinden erişilebilir.
+
+Proxy yapılandırması `.vtunnel-proxy/config.json` dosyasında saklanır ve şunları içerir:
+- Ana domain yapılandırması
+- Subdomain eşleştirme desenleri
+- SSL sertifika yönetimi (Let's Encrypt kullanarak)
+- Port yapılandırmaları
+
 ## Arkaplan Servisi Olarak Çalıştırma
 
-V-Tunnel sunucusunu bir arkaplan servisi olarak çalıştırabilirsiniz:
+V-Tunnel sunucusunu ve proxy'yi arkaplan servisi olarak çalıştırabilirsiniz:
 
 ```bash
 # Sunucuyu arkaplanda başlat
 vtunnel server background start
 
-# Sunucunun çalışıp çalışmadığını kontrol et
-vtunnel server background status
+# Proxy'yi arkaplanda başlat
+vtunnel proxy background start
 
-# Arkaplan sunucusunu durdur
+# Durumu kontrol et
+vtunnel server background status
+vtunnel proxy background status
+
+# Servisleri durdur
 vtunnel server background stop
+vtunnel proxy background stop
 ```
 
 Arkaplan modunda çalışırken:
 - Sunucu logları `.vtunnel-server/vtunnel.log` dosyasına kaydedilir
-- Hata logları `.vtunnel-server/vtunnel-error.log` dosyasına kaydedilir
-- İşlem bilgileri `.vtunnel-server/bg.json` dosyasında saklanır
+- Proxy logları `.vtunnel-proxy/proxy-output.log` dosyasına kaydedilir
+- Hata logları `.vtunnel-server/vtunnel-error.log` ve `.vtunnel-proxy/proxy-error.log` dosyalarına kaydedilir
+- İşlem bilgileri ilgili yapılandırma dizinlerinde saklanır
 
 ## Gelişmiş Yapılandırma
 
@@ -350,6 +430,15 @@ Sunucu yapılandırması `.vtunnel-server/` dizininde saklanır:
 - `vtunnel.log`: Arkaplanda çalışırken sunucu logları
 - `vtunnel-error.log`: Arkaplanda çalışırken hata logları
 
+### Proxy Yapılandırması
+
+Proxy yapılandırması `.vtunnel-proxy/` dizininde saklanır:
+- `config.json`: Domain ve SSL ayarlarını saklar
+- `greenlock/`: SSL sertifika bilgilerini içerir
+- `background.json`: Arkaplan işlem bilgisi
+- `proxy-output.log`: Arkaplanda çalışırken proxy logları
+- `proxy-error.log`: Arkaplanda çalışırken proxy hata logları
+
 ## Alternatiflerle Karşılaştırma
 
 | Özellik | V-Tunnel | Ngrok | Cloudflare Tunnel | LocalTunnel |
@@ -362,6 +451,7 @@ Sunucu yapılandırması `.vtunnel-server/` dizininde saklanır:
 | Kalıcı tüneller | ✅ | ⚠️ (ücretli) | ✅ | ❌ |
 | Arkaplan modu | ✅ | ✅ | ✅ | ❌ |
 | Trafik metrikleri | ✅ | ✅ | ✅ | ❌ |
+| SSL sertifikaları | ✅ | ✅ | ✅ | ❌ |
 | Boyut | 99Kb | ~15MB | ~10MB | ~5MB |
 
 ## Güvenlik Hususları
