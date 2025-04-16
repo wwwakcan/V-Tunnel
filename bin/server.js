@@ -11,7 +11,7 @@
  * @author      Cengiz AKCAN <me@cengizakcan.com>
  * @copyright   Copyright (c) 2025, Cengiz AKCAN
  * @license     MIT
- * @version     1.0.7
+ * @version     1.0.8
  * @link        https://github.com/wwwakcan/V-Tunnel
  *
  * This software is released under the MIT License.
