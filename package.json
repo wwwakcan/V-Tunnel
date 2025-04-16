@@ -1,6 +1,6 @@
 {
   "name": "v-tunnel",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "author": "Cengiz AKCAN",
   "description": "Manageable multi-tunnel and port forwarding system",
   "main": "bin/client.js",
@@ -51,6 +51,6 @@
     "sqlite3": "^5.1.7",
     "uuid": "^11.1.0",
     "ws": "^8.18.1",
-    "yargs": "^17.7.2"
+    "yargs": "github:yargs/yargs"
   }
 }
