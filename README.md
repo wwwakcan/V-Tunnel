@@ -1,6 +1,6 @@
 # V-Tunnel
 
-[![npm version](https://badge.fury.io/js/vtunnel.svg)](https://www.npmjs.com/package/vtunnel)
+[![npm version](https://badge.fury.io/js/v-tunnel.svg)](https://www.npmjs.com/package/v-tunnel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A lightweight (99Kb), 100% free and open-source alternative to commercial tunneling solutions like Ngrok, Cloudflare Tunnel, and others.
@@ -26,7 +26,7 @@ V-Tunnel allows you to expose local services to the internet through secure tunn
 ## Installation
 
 ```bash
-npm install -g vtunnel
+npm install -g v-tunnel
 ```
 
 ## Quick Start
@@ -168,7 +168,7 @@ Cengiz AKCAN - me@cengizakcan.com
 
 # V-Tunnel
 
-[![npm version](https://badge.fury.io/js/vtunnel.svg)](https://www.npmjs.com/package/vtunnel)
+[![npm version](https://badge.fury.io/js/v-tunnel.svg)](https://www.npmjs.com/package/v-tunnel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Ngrok, Cloudflare Tunnel ve diğer ticari tünel çözümlerine alternatif olarak hafif (99Kb), %100 ücretsiz ve açık kaynaklı bir çözüm.
@@ -188,7 +188,7 @@ Ngrok, Cloudflare Tunnel ve diğer ticari tünel çözümlerine alternatif olara
 ## Kurulum
 
 ```bash
-npm install -g vtunnel
+npm install -g v-tunnel
 ```
 
 ## Hızlı Başlangıç
