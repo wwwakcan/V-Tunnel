@@ -11,7 +11,6 @@
  * @author      Cengiz AKCAN <me@cengizakcan.com>
  * @copyright   Copyright (c) 2025, Cengiz AKCAN
  * @license     MIT
- * @version     1.1.4
  * @link        https://github.com/wwwakcan/V-Tunnel
  *
  * This software is released under the MIT License.
@@ -67,6 +66,8 @@ const DB_FILE = path.join(CONFIG_DIR, 'vtunnel.db');
 let PORT = config.PORT;
 let TUNNEL_PORT_RANGE_START = config.TUNNEL_PORT_RANGE_START;
 let TUNNEL_PORT_RANGE_END = config.TUNNEL_PORT_RANGE_END;
+const HEARTBEAT_INTERVAL = 30000; // ms
+const CONNECTION_TIMEOUT = 10000; // ms
 
 // Database connection
 let db;
@@ -85,8 +86,6 @@ let availablePorts = [];
 let tunnels = {};
 let clients = {};
 let sessions = {};
-
-
 
 // Background process management
 function startBackgroundProcess() {
@@ -236,7 +235,6 @@ function checkBackgroundStatus() {
     }
 }
 
-
 // Setup the VTunnel server
 async function setupVTunnel() {
     logger.info("Starting VTunnel setup...");
@@ -295,7 +293,6 @@ async function setupVTunnel() {
         PORT = serverAnswers.port;
         TUNNEL_PORT_RANGE_START = serverAnswers.rangeStart;
         TUNNEL_PORT_RANGE_END = serverAnswers.rangeEnd;
-
 
         // Confirm setup
         console.log('\n' + colors.bold.yellow('--- Configuration Summary ---'));
@@ -393,6 +390,7 @@ async function initializeDatabase(adminUsername = null, adminPassword = null) {
                                                    is_active INTEGER DEFAULT 0,
                                                    bytes_sent BIGINT DEFAULT 0,
                                                    bytes_received BIGINT DEFAULT 0,
+                                                   active_connections INTEGER DEFAULT 0,
                                                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                                                    last_active_at TEXT,
                                                    FOREIGN KEY (owner_id) REFERENCES users (id)
@@ -416,6 +414,15 @@ async function initializeDatabase(adminUsername = null, adminPassword = null) {
         } catch (err) {
             // Ignore error if column already exists
             logger.debug("Error adding bytes_received column: " + err.message);
+        }
+
+        try {
+            // Add active_connections column (if it doesn't exist)
+            await db.exec(`ALTER TABLE tunnels ADD COLUMN active_connections INTEGER DEFAULT 0`);
+            logger.info("active_connections column added");
+        } catch (err) {
+            // Ignore error if column already exists
+            logger.debug("Error adding active_connections column: " + err.message);
         }
 
         // Check for an existing admin user
@@ -601,7 +608,7 @@ async function loadTunnelsFromDatabase() {
     try {
         const dbTunnels = await db.all(`
             SELECT id, name, port, owner_id, description, created_at,
-                   bytes_sent, bytes_received
+                   bytes_sent, bytes_received, active_connections
             FROM tunnels
         `);
 
@@ -621,10 +628,12 @@ async function loadTunnelsFromDatabase() {
                 socket: null,
                 server: null,
                 clients: {},
+                waitingClients: [],
                 isActive: false,
                 trafficStats: {
                     bytesSent: tunnel.bytes_sent || 0,
-                    bytesReceived: tunnel.bytes_received || 0
+                    bytesReceived: tunnel.bytes_received || 0,
+                    activeConnections: tunnel.active_connections || 0
                 }
             };
         }
@@ -636,32 +645,72 @@ async function loadTunnelsFromDatabase() {
 }
 
 // Update traffic statistics
-async function updateTrafficStats(tunnelName, bytesSent = 0, bytesReceived = 0) {
-    if (!tunnelName || (!bytesSent && !bytesReceived)) return;
+async function updateTrafficStats(tunnelName, bytesSent = 0, bytesReceived = 0, connectionDelta = 0) {
+    if (!tunnelName) return;
 
     try {
-        // Update traffic statistics in database
-        await db.run(`
-            UPDATE tunnels
-            SET bytes_sent = bytes_sent + ?, bytes_received = bytes_received + ?
-            WHERE name = ?
-        `, bytesSent, bytesReceived, tunnelName);
+        // Only update database if there are changes
+        if (bytesSent || bytesReceived || connectionDelta) {
+            // Update traffic statistics in database
+            let query = `
+                UPDATE tunnels
+                SET
+            `;
+
+            const params = [];
+            let updateParts = [];
+
+            if (bytesSent) {
+                updateParts.push('bytes_sent = bytes_sent + ?');
+                params.push(bytesSent);
+            }
+
+            if (bytesReceived) {
+                updateParts.push('bytes_received = bytes_received + ?');
+                params.push(bytesReceived);
+            }
+
+            if (connectionDelta) {
+                updateParts.push('active_connections = active_connections + ?');
+                params.push(connectionDelta);
+            }
+
+            query += updateParts.join(', ');
+            query += ` WHERE name = ?`;
+            params.push(tunnelName);
+
+            await db.run(query, params);
+        }
 
         // Update in-memory tunnel object as well
         if (tunnels[tunnelName]) {
             if (!tunnels[tunnelName].trafficStats) {
                 tunnels[tunnelName].trafficStats = {
                     bytesSent: 0,
-                    bytesReceived: 0
+                    bytesReceived: 0,
+                    activeConnections: 0
                 };
             }
 
-            tunnels[tunnelName].trafficStats.bytesSent += bytesSent;
-            tunnels[tunnelName].trafficStats.bytesReceived += bytesReceived;
+            if (bytesSent) {
+                tunnels[tunnelName].trafficStats.bytesSent += bytesSent;
+            }
+
+            if (bytesReceived) {
+                tunnels[tunnelName].trafficStats.bytesReceived += bytesReceived;
+            }
+
+            if (connectionDelta) {
+                tunnels[tunnelName].trafficStats.activeConnections += connectionDelta;
+                // Ensure we don't go below zero
+                if (tunnels[tunnelName].trafficStats.activeConnections < 0) {
+                    tunnels[tunnelName].trafficStats.activeConnections = 0;
+                }
+            }
         }
 
         if (process.env.DEBUG) {
-            logger.debug(`Traffic statistics updated: ${tunnelName}, +${bytesSent} sent, +${bytesReceived} received`);
+            logger.debug(`Traffic statistics updated: ${tunnelName}, +${bytesSent} sent, +${bytesReceived} received, connection delta: ${connectionDelta}`);
         }
     } catch (err) {
         logger.error(`Error updating traffic statistics: ${err.message}`);
@@ -690,6 +739,7 @@ function createControlServer() {
         socket.authenticated = false;
         socket.userId = null;
         socket.username = null;
+        socket.lastHeartbeat = Date.now();
 
         logger.info(`New control connection: ${clientId} - ${socket.remoteAddress}:${socket.remotePort}`);
 
@@ -729,11 +779,25 @@ function createControlServer() {
             }
         });
 
+        // Set socket timeout
+        socket.setTimeout(CONNECTION_TIMEOUT);
+        socket.on('timeout', () => {
+            // Check last heartbeat time
+            const currentTime = Date.now();
+            const timeSinceLastHeartbeat = currentTime - socket.lastHeartbeat;
+
+            if (timeSinceLastHeartbeat > HEARTBEAT_INTERVAL * 2) {
+                logger.warning(`Connection timeout for client ${clientId}. No heartbeat received for ${timeSinceLastHeartbeat}ms`);
+                socket.destroy();
+            }
+        });
+
         // Send welcome message
         sendMessage(socket, {
             type: 'welcome',
-            server_version: '1.0.0',
-            client_id: clientId
+            server_version: '1.2.0',
+            client_id: clientId,
+            timestamp: Date.now()
         });
     });
 
@@ -742,6 +806,9 @@ function createControlServer() {
 
 // Process control messages
 async function processMessage(socket, message) {
+    // Update last heartbeat time
+    socket.lastHeartbeat = Date.now();
+
     // Operations requiring authentication
     if (!socket.authenticated && message.type !== 'login' && message.type !== 'ping') {
         // Authentication with token
@@ -800,13 +867,59 @@ async function processMessage(socket, message) {
             handleData(socket, message);
             break;
         case 'ping':
-            sendMessage(socket, { type: 'pong', time: Date.now() });
+            sendMessage(socket, {
+                type: 'pong',
+                time: Date.now(),
+                server_time: Date.now(),
+                client_time: message.time || null
+            });
             break;
         case 'change_password':
             await changePassword(socket, message);
             break;
+        case 'client_ready':
+            handleClientReady(socket, message);
+            break;
+        case 'heartbeat':
+            // Just update the lastHeartbeat timestamp (already done at the top of this function)
+            sendMessage(socket, {
+                type: 'heartbeat_ack',
+                time: Date.now()
+            });
+            break;
         default:
             logger.debug(`Unknown message type: ${message.type}`);
+    }
+}
+
+// Handle client ready message (when client is ready to receive data)
+function handleClientReady(socket, message) {
+    if (!message.client_id || !socket.tunnelName) {
+        return;
+    }
+
+    const tunnelName = socket.tunnelName;
+    const clientId = message.client_id;
+
+    if (!tunnels[tunnelName]) {
+        logger.warning(`Tunnel not found: ${tunnelName}`);
+        return;
+    }
+
+    if (!tunnels[tunnelName].clients[clientId]) {
+        logger.warning(`Client not found in tunnel: ${clientId}`);
+        return;
+    }
+
+    logger.debug(`Client ${clientId} is ready to receive data for tunnel ${tunnelName}`);
+
+    // Mark client as ready
+    tunnels[tunnelName].clients[clientId].ready = true;
+
+    // Resume the socket if it was paused
+    const clientSocket = tunnels[tunnelName].clients[clientId].socket;
+    if (clientSocket && !clientSocket.destroyed) {
+        clientSocket.resume();
     }
 }
 
@@ -955,13 +1068,15 @@ async function registerTunnel(socket, message) {
         socket: socket,
         server: server,
         clients: {},
+        waitingClients: [],
         ownerId: socket.userId,
         description: description,
         createdAt: new Date().toISOString(),
         isActive: true,
         trafficStats: {
             bytesSent: 0,
-            bytesReceived: 0
+            bytesReceived: 0,
+            activeConnections: 0
         }
     };
 
@@ -973,14 +1088,14 @@ async function registerTunnel(socket, message) {
             // Update tunnel
             await db.run(`
                 UPDATE tunnels
-                SET port = ?, description = ?, is_active = 1, last_active_at = CURRENT_TIMESTAMP
+                SET port = ?, description = ?, is_active = 1, last_active_at = CURRENT_TIMESTAMP, active_connections = 0
                 WHERE name = ?
             `, tunnelPort, description, tunnelName);
         } else {
             // Create new tunnel
             await db.run(`
-                INSERT INTO tunnels (name, port, owner_id, description, is_active, bytes_sent, bytes_received)
-                VALUES (?, ?, ?, ?, 1, 0, 0)
+                INSERT INTO tunnels (name, port, owner_id, description, is_active, bytes_sent, bytes_received, active_connections)
+                VALUES (?, ?, ?, ?, 1, 0, 0, 0)
             `, tunnelName, tunnelPort, socket.userId, description);
         }
 
@@ -1023,7 +1138,7 @@ async function listTunnels(socket, message) {
     try {
         let query = `
             SELECT t.id, t.name, t.port, t.description, t.is_active, t.created_at, t.last_active_at,
-                   t.bytes_sent, t.bytes_received, u.username as owner_username
+                   t.bytes_sent, t.bytes_received, t.active_connections, u.username as owner_username
             FROM tunnels t
                      JOIN users u ON t.owner_id = u.id
         `;
@@ -1051,6 +1166,7 @@ async function listTunnels(socket, message) {
             lastActiveAt: t.last_active_at,
             bytes_sent: t.bytes_sent || 0,
             bytes_received: t.bytes_received || 0,
+            active_connections: t.active_connections || 0,
             clientCount: tunnels[t.name] && tunnels[t.name].clients ? Object.keys(tunnels[t.name].clients).length : 0
         }));
 
@@ -1114,7 +1230,7 @@ async function deleteTunnel(socket, message) {
     }
 }
 
-// Create server for a specific tunnel
+// Create server for a specific tunnel with enhanced flow control
 function createTunnelServer(tunnelName, port) {
     const server = net.createServer(socket => {
         const clientId = crypto.randomBytes(8).toString('hex');
@@ -1129,11 +1245,26 @@ function createTunnelServer(tunnelName, port) {
             return;
         }
 
-        // Store this client connection
-        tunnels[tunnelName].clients[clientId] = {
+        // Pause socket until client is ready to handle it
+        socket.pause();
+
+        // Create client metadata
+        const clientMetadata = {
             socket: socket,
-            connectedAt: new Date().toISOString()
+            connectedAt: new Date().toISOString(),
+            bytesReceived: 0,
+            bytesSent: 0,
+            ready: false,
+            queue: [],
+            ip: socket.remoteAddress,
+            port: socket.remotePort
         };
+
+        // Store this client connection
+        tunnels[tunnelName].clients[clientId] = clientMetadata;
+
+        // Update active connections count
+        updateTrafficStats(tunnelName, 0, 0, 1);
 
         // Inform tunnel owner about new connection
         sendMessage(tunnels[tunnelName].socket, {
@@ -1141,7 +1272,8 @@ function createTunnelServer(tunnelName, port) {
             client_id: clientId,
             tunnel_name: tunnelName,
             remote_address: socket.remoteAddress,
-            remote_port: socket.remotePort
+            remote_port: socket.remotePort,
+            timestamp: Date.now()
         });
 
         // Process data from client to tunnel
@@ -1150,12 +1282,12 @@ function createTunnelServer(tunnelName, port) {
                 sendMessage(tunnels[tunnelName].socket, {
                     type: 'data',
                     client_id: clientId,
-                    data: data.toString('base64')
+                    data: data.toString('base64') // Use base64 to handle binary data properly
                 });
 
                 // Update traffic statistics - data flow from outside world to tunnel
-                // bytes_sent increases for tunnelName because tunnel is sending data to client
-                updateTrafficStats(tunnelName, data.length, 0);
+                tunnels[tunnelName].clients[clientId].bytesReceived += data.length;
+                updateTrafficStats(tunnelName, data.length, 0, 0);
             } else {
                 // Tunnel is gone, close this connection
                 socket.destroy();
@@ -1169,16 +1301,29 @@ function createTunnelServer(tunnelName, port) {
         socket.on('close', () => {
             logger.info(`Client closed connection to tunnel ${tunnelName}: ${clientId}`);
 
+            const client = tunnels[tunnelName]?.clients[clientId];
+            if (client) {
+                // Log traffic stats before removing
+                const bytesSent = client.bytesSent || 0;
+                const bytesReceived = client.bytesReceived || 0;
+                logger.debug(`Connection closed - Traffic stats: sent ${bytesSent} bytes, received ${bytesReceived} bytes`);
+            }
+
             // Remove client from tunnel
             if (tunnels[tunnelName] && tunnels[tunnelName].clients[clientId]) {
                 delete tunnels[tunnelName].clients[clientId];
+
+                // Update active connections count
+                updateTrafficStats(tunnelName, 0, 0, -1);
             }
 
             // Notify tunnel owner
             if (tunnels[tunnelName] && tunnels[tunnelName].socket && !tunnels[tunnelName].socket.destroyed) {
                 sendMessage(tunnels[tunnelName].socket, {
                     type: 'client_disconnected',
-                    client_id: clientId
+                    client_id: clientId,
+                    tunnel_name: tunnelName,
+                    timestamp: Date.now()
                 });
             }
         });
@@ -1235,7 +1380,8 @@ function registerClient(socket, message) {
         type: 'tunnel_info',
         tunnel_name: tunnelName,
         port: tunnels[tunnelName].port,
-        description: tunnels[tunnelName].description || ''
+        description: tunnels[tunnelName].description || '',
+        timestamp: Date.now()
     });
 }
 
@@ -1255,14 +1401,26 @@ function handleData(socket, message) {
         const data = Buffer.from(message.data, 'base64');
 
         // Update traffic statistics - client -> server data flow
-        // bytes_received increases for tunnelName because tunnel is receiving data from client
-        updateTrafficStats(tunnelName, 0, data.length);
+        if (tunnels[tunnelName].clients[message.client_id]) {
+            tunnels[tunnelName].clients[message.client_id].bytesSent += data.length;
+        }
+
+        updateTrafficStats(tunnelName, 0, data.length, 0);
 
         // Forward data from tunnel owner to client
         if (tunnels[tunnelName].clients[message.client_id]) {
             const clientSocket = tunnels[tunnelName].clients[message.client_id].socket;
+            const clientReady = tunnels[tunnelName].clients[message.client_id].ready;
+
             if (clientSocket && !clientSocket.destroyed) {
-                clientSocket.write(data);
+                if (clientReady) {
+                    // Send data directly if client is ready
+                    clientSocket.write(data);
+                } else {
+                    // Queue data if client is not ready yet
+                    tunnels[tunnelName].clients[message.client_id].queue.push(data);
+                    logger.debug(`Queued ${data.length} bytes for client ${message.client_id} (not ready yet)`);
+                }
             }
         }
     } catch (err) {
@@ -1362,6 +1520,13 @@ async function cleanupClient(socket) {
         // Update tunnel status
         await updateTunnelStatus(tunnelName, false);
 
+        // Get the count of active clients for statistics update
+        const activeClientsCount = Object.keys(tunnels[tunnelName].clients).length;
+        if (activeClientsCount > 0) {
+            // Update connection count to zero
+            await db.run(`UPDATE tunnels SET active_connections = 0 WHERE name = ?`, tunnelName);
+        }
+
         // Close all client connections
         Object.keys(tunnels[tunnelName].clients).forEach(cId => {
             const client = tunnels[tunnelName].clients[cId];
@@ -1411,6 +1576,10 @@ function cleanupTunnel(tunnelName) {
         });
     }
 
+    // Update database to show zero active connections
+    db.run(`UPDATE tunnels SET active_connections = 0 WHERE name = ?`, tunnelName)
+        .catch(err => logger.error(`Error resetting connection count: ${err.message}`));
+
     // Remove tunnel but don't add port back to availablePorts
     // The tunnel will stay in DB and use the same port unless deleted
     delete tunnels[tunnelName];
@@ -1427,8 +1596,17 @@ function displayServerStats() {
     const activeTunnels = Object.values(tunnels).filter(t => t.isActive).length;
 
     let totalClients = 0;
+    let totalDataSent = 0;
+    let totalDataReceived = 0;
+
     Object.values(tunnels).forEach(tunnel => {
-        totalClients += Object.keys(tunnel.clients).length;
+        const clientCount = Object.keys(tunnel.clients).length;
+        totalClients += clientCount;
+
+        if (tunnel.trafficStats) {
+            totalDataSent += tunnel.trafficStats.bytesSent || 0;
+            totalDataReceived += tunnel.trafficStats.bytesReceived || 0;
+        }
     });
 
     statsTable.push(
@@ -1437,11 +1615,47 @@ function displayServerStats() {
         ['Total Tunnels', totalTunnels],
         ['Active Tunnels', activeTunnels],
         ['Connected Clients', totalClients],
+        ['Total Data Sent', formatBytes(totalDataSent)],
+        ['Total Data Received', formatBytes(totalDataReceived)],
         ['Uptime', formatUptime(process.uptime())]
     );
 
     console.log('\n' + colors.bold.green('VTunnel Server Stats:'));
     console.log(statsTable.toString());
+
+    // Show active tunnels if any
+    if (activeTunnels > 0) {
+        const tunnelsTable = new Table({
+            head: [colors.cyan('Tunnel Name'), colors.cyan('Port'), colors.cyan('Clients'), colors.cyan('Data Sent'), colors.cyan('Data Received')],
+            colWidths: [25, 10, 10, 15, 15]
+        });
+
+        Object.entries(tunnels)
+            .filter(([_, tunnel]) => tunnel.isActive)
+            .forEach(([name, tunnel]) => {
+                tunnelsTable.push([
+                    name,
+                    tunnel.port,
+                    Object.keys(tunnel.clients).length,
+                    formatBytes(tunnel.trafficStats?.bytesSent || 0),
+                    formatBytes(tunnel.trafficStats?.bytesReceived || 0)
+                ]);
+            });
+
+        console.log('\n' + colors.bold.green('Active Tunnels:'));
+        console.log(tunnelsTable.toString());
+    }
+}
+
+// Helper function to format bytes
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 Bytes';
+
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
 // Format uptime in a readable way
@@ -1506,6 +1720,11 @@ async function parseCliArguments() {
             type: 'boolean',
             default: false
         })
+        .option('debug', {
+            description: 'Enable debug logging',
+            type: 'boolean',
+            default: false
+        })
         .help()
         .alias('help', 'h')
         .version(false)
@@ -1516,6 +1735,7 @@ async function parseCliArguments() {
     if (argv.rangeStart) TUNNEL_PORT_RANGE_START = argv.rangeStart;
     if (argv.rangeEnd) TUNNEL_PORT_RANGE_END = argv.rangeEnd;
     if (argv.configDir) config.CONFIG_DIR = argv.configDir;
+    if (argv.debug) process.env.DEBUG = true;
 
     // Enable periodic stats display if requested
     if (argv.stats) {
@@ -1523,7 +1743,6 @@ async function parseCliArguments() {
         displayServerStats();
         setInterval(displayServerStats, 30000);
     }
-
 }
 
 // Main function
@@ -1541,7 +1760,7 @@ async function main() {
             '      \\_/    |___\\__,_|_| |_|_| |_|\\___|_|  \n' +
             '                                             '
         ));
-        console.log(colors.yellow('   Secure Tunnel Routing Server - v1.0.0') + '\n');
+        console.log(colors.yellow('   Secure Tunnel Routing Server - v1.2.0') + '\n');
 
         // Initialize available ports
         initAvailablePorts();
@@ -1614,6 +1833,9 @@ setInterval(async () => {
             // Update tunnel status in database
             await updateTunnelStatus(tunnelName, false);
 
+            // Update connection count to zero
+            await db.run(`UPDATE tunnels SET active_connections = 0 WHERE name = ?`, tunnelName);
+
             // Close tunnel server
             if (tunnel.server) {
                 tunnel.server.close(() => {
@@ -1634,7 +1856,7 @@ setInterval(async () => {
             tunnel.clients = {};
         }
     }
-}, 60000);
+}, 60000); // Check every minute
 
 // Start the application
 main().catch(err => {

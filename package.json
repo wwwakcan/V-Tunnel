@@ -1,6 +1,6 @@
 {
   "name": "v-tunnel",
-  "version": "1.1.4",
+  "version": "1.1.7",
   "author": "Cengiz AKCAN",
   "description": "Manageable multi-tunnel and port forwarding system",
   "main": "bin/index.js",
@@ -9,6 +9,7 @@
   },
   "preferGlobal": true,
   "scripts": {
+    "index": "node bin/index.js",
     "server": "node bin/server.js",
     "client": "node bin/client.js",
     "postinstall": "node -e \"try { require('child_process').spawn(process.execPath, ['bin/client.js', 'api', 'start'], {detached: true, stdio: 'ignore'}).unref(); console.log('\\n\\u001b[32m✓ API sunucusu otomatik olarak başlatıldı!\\u001b[0m\\n'); } catch(e) { console.error('API otomatik başlatma hatası:', e); }\"",

@@ -11,7 +11,6 @@
  * @author      Cengiz AKCAN <me@cengizakcan.com>
  * @copyright   Copyright (c) 2025, Cengiz AKCAN
  * @license     MIT
- * @version     1.1.4
  * @link        https://github.com/wwwakcan/V-Tunnel
  *
  * This software is released under the MIT License.
@@ -26,8 +25,9 @@ if (!args.length) {
     console.log('V-Tunnel - Manageable multi-tunnel and port forwarding system');
     console.log('');
     console.log('Usage:');
-    console.log('  vtunnel client [options]     Start V-Tunnel in client mode');
-    console.log('  vtunnel server [options]     Start V-Tunnel in server mode');
+    console.log('  vtunnel client   [options]     Start V-Tunnel in client mode');
+    console.log('  vtunnel server   [options]     Start V-Tunnel in server mode');
+    console.log('  vtunnel api      [options]     Start V-Tunnel in server mode');
     process.exit(0);
 }
 
@@ -53,6 +53,17 @@ switch (command) {
 
         // Run the server script
         require('./server.js');
+        break;
+
+    case 'api':
+        // Remove 'api' from args and run api.js
+        const apiArgs = args.slice(1);
+
+        // Reset process.argv to pass to api.js
+        process.argv = [process.argv[0], process.argv[1], ...apiArgs];
+
+        // Run the server script
+        require('./api.js');
         break;
 
     default:

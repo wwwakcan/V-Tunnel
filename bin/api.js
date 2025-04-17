@@ -11,7 +11,6 @@
  * @author      Cengiz AKCAN <me@cengizakcan.com>
  * @copyright   Copyright (c) 2025, Cengiz AKCAN
  * @license     MIT
- * @version     1.1.4
  * @link        https://github.com/wwwakcan/V-Tunnel
  *
  * This software is released under the MIT License.
@@ -46,7 +45,6 @@ const WEB_UI_DIR = path.join(__dirname, 'web-ui');
 // API Configuration
 const API_PORT = 9011;
 const API_SECRET = process.env.VTUNNEL_API_SECRET || 'vtunnel-api-secret-key';
-const API_TOKEN_EXPIRY = '24h';
 
 // Package.json'dan versiyon bilgisini al
 let packageVersion = '1.0.0';
@@ -512,67 +510,6 @@ app.get('/api/status', (req, res) => {
         version: packageVersion,
         timestamp: new Date().toISOString()
     });
-});
-
-// Authentication Endpoint
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { username, password, server = 'localhost', port = 9012 } = req.body;
-
-        if (!username || !password) {
-            return res.status(400).json({ error: 'Username and password are required' });
-        }
-
-        // Convert port to number
-        const portNum = parseInt(port, 10);
-        if (isNaN(portNum)) {
-            return res.status(400).json({ error: 'Invalid port number' });
-        }
-
-        // Connect to V-Tunnel server and login
-        const response = await connectAndSend({
-            type: 'login',
-            username,
-            password,
-            server,
-            port: portNum
-        });
-
-        if (response.success) {
-            // Save credentials
-            const auth = {
-                server,
-                port: portNum,
-                token: response.token,
-                user: response.user,
-                loginTime: new Date().toISOString()
-            };
-
-            await saveAuth(auth);
-
-            // Generate API JWT token
-            const apiToken = jwt.sign(
-                { username: response.user.username, id: response.user.id },
-                API_SECRET,
-                { expiresIn: API_TOKEN_EXPIRY }
-            );
-
-            res.json({
-                success: true,
-                message: 'Login successful',
-                user: response.user,
-                token: apiToken
-            });
-        } else {
-            res.status(401).json({
-                success: false,
-                error: response.message || 'Authentication failed'
-            });
-        }
-    } catch (err) {
-        logger.error('Login error: ' + err.message);
-        res.status(500).json({ error: 'Server error during login' });
-    }
 });
 
 // Get Tunnels List

@@ -11,7 +11,6 @@
  * @author      Cengiz AKCAN <me@cengizakcan.com>
  * @copyright   Copyright (c) 2025, Cengiz AKCAN
  * @license     MIT
- * @version     1.1.4
  * @link        https://github.com/wwwakcan/V-Tunnel
  *
  * This software is released under the MIT License.
@@ -44,6 +43,12 @@ const AUTH_FILE     = path.join(CONFIG_DIR, 'auth.json');
 const TUNNELS_FILE  = path.join(CONFIG_DIR, 'tunnels.json');
 const API_PID_FILE = path.join(CONFIG_DIR, 'api.pid');
 const apiServer = require('./api');
+
+// Constants
+const HEARTBEAT_INTERVAL = 30000; // ms
+const CONNECTION_TIMEOUT = 10000; // ms
+const MAX_RECONNECTION_ATTEMPTS = 5;
+const RECONNECTION_BASE_DELAY = 2000; // ms
 
 // Color themes
 colors.setTheme({
@@ -156,7 +161,6 @@ async function isApiServerRunning() {
     }
 }
 
-// Start the API server
 // Start the API server
 async function startApiServer() {
     try {
@@ -359,13 +363,11 @@ async function connectAndSend(message, timeoutMs = 10000) {
     });
 }
 
-// Add these variables to track reconnection state
-let reconnectionAttempts = 0;
-const MAX_RECONNECTION_ATTEMPTS = 3;
+// Variables to track reconnection state
 let reconnectionTimer = null;
 
-// Modify the createTunnelClient function to handle reconnections
-async function createTunnelClient(tunnelName, localHost, localPort) {
+// Enhanced tunnel client creation with improved flow control and better reconnection
+async function createTunnelClient(tunnelName, localHost, localPort, options = {}) {
     const auth = await loadAuth();
     if (!auth) {
         logger.error('Authentication information not found. Please use the "login" command first.');
@@ -376,7 +378,19 @@ async function createTunnelClient(tunnelName, localHost, localPort) {
     logger.info(`Server: ${auth.server}:${auth.port}`);
     logger.info(`Target: ${localHost}:${localPort}`);
 
-    reconnectionAttempts = 0; // Reset reconnection attempts counter
+    const tunnelState = {
+        reconnectionAttempts: 0,
+        isReconnecting: false,
+        isShuttingDown: false
+    };
+
+    // Default options
+    const tunnelOptions = {
+        maxReconnectionAttempts: options.maxReconnectionAttempts || MAX_RECONNECTION_ATTEMPTS,
+        heartbeatInterval: options.heartbeatInterval || HEARTBEAT_INTERVAL,
+        connectionTimeout: options.connectionTimeout || CONNECTION_TIMEOUT,
+        autoReconnect: options.autoReconnect !== false  // Default to true
+    };
 
     return new Promise((resolve, reject) => {
         // Safely convert port value
@@ -388,256 +402,354 @@ async function createTunnelClient(tunnelName, localHost, localPort) {
             return;
         }
 
-        const controlSocket = new net.Socket();
-        let pingInterval;
-        let registered = false;
-        let tunnelPort;
-        let buffer = '';
-        let isConnected = false;
-
-        controlSocket.on('data', data => {
-            try {
-                buffer += data.toString();
-
-                let newlineIndex;
-                while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-                    const messageStr = buffer.substring(0, newlineIndex);
-                    buffer = buffer.substring(newlineIndex + 1);
-
-                    const message = decrypt(messageStr);
-                    if (!message) continue;
-
-                    processMessage(controlSocket, message);
-                }
-            } catch (err) {
-                logger.error('Data processing error: ' + err);
-                reject(err);
-                controlSocket.destroy();
-            }
-        });
-
-        controlSocket.on('error', err => {
-            logger.error('Control connection error: ' + err.message);
-            // Don't reject here, let the close handler handle reconnection
-            if (registered) {
-                logger.warning('Connection error detected. Will attempt to reconnect...');
-            } else {
-                reject(err);
-            }
-        });
-
-        controlSocket.on('close', () => {
-            logger.info('Connection to tunnel server closed');
-            clearInterval(pingInterval);
-            isConnected = false;
-
-            if (registered) {
-                // Only attempt to reconnect if we were previously registered
-                attemptReconnection(tunnelName, localHost, localPort, tunnelPort, resolve);
-            } else {
-                resolve(null);  // Clean exit for initial connection failure
-            }
-        });
-
-        controlSocket.connect(SERVER_PORT, SERVER_HOST, () => {
-            logger.info('Connected to tunnel server');
-            isConnected = true;
-
-            // Start ping interval
-            pingInterval = setInterval(() => {
-                // Check connection status before sending ping
-                if (!controlSocket.destroyed) {
-                    sendMessage(controlSocket, { type: 'ping', time: Date.now() });
-                }
-            }, 30000);
-        });
-
-        // Process incoming messages
-        const clients = {};
-
-        function processMessage(socket, message) {
-            switch(message.type) {
-                case 'welcome':
-                    logger.debug(`Received server welcome, client_id: ${message.client_id}`);
-                    // Login
-                    sendMessage(socket, {
-                        type: 'login',
-                        token: auth.token
-                    });
-                    break;
-
-                case 'login_response':
-                    if (message.success) {
-                        // Register tunnel
-                        sendMessage(socket, {
-                            type: 'register_tunnel',
-                            tunnel_name: tunnelName,
-                            description: `Local service at ${localHost}:${localPort}`
-                        });
-                    } else {
-                        logger.error(`Authentication error: ${message.message}`);
-                        socket.destroy();
-                        reject(new Error(`Authentication error: ${message.message}`));
-                    }
-                    break;
-
-                case 'tunnel_registered':
-                    registered = true;
-                    reconnectionAttempts = 0; // Reset counter when successfully registered
-                    tunnelPort = message.port;
-                    logger.success(`Tunnel successfully registered! Your service is accessible at:`);
-                    logger.success(`  ${auth.server}:${message.port}`);
-                    resolve({ controlSocket, tunnelName, tunnelPort, isConnected: true });
-                    break;
-
-                case 'error':
-                    logger.error(`Server error: ${message.message}`);
-                    if (!registered) {
-                        socket.destroy();
-                        reject(new Error(`Server error: ${message.message}`));
-                    }
-                    break;
-
-                case 'connection':
-                    handleNewConnection(socket, message.client_id, message.remote_address, message.remote_port);
-                    break;
-
-                case 'data':
-                    forwardDataToLocalService(message.client_id, message.data);
-                    break;
-
-                case 'client_disconnected':
-                    closeClientConnection(message.client_id);
-                    break;
-
-                case 'pong':
-                    // Pong received, connection is still alive
-                    break;
-
-                default:
-                    logger.debug(`Unknown message type: ${message.type}`);
-                    break;
-            }
-        }
-
-        // Handler functions for client connections
-        function handleNewConnection(controlSocket, clientId, remoteAddress, remotePort) {
-            logger.info(`New connection from ${remoteAddress}:${remotePort} (ID: ${clientId})`);
-
-            // Create connection to local service
-            const localSocket = new net.Socket();
-
-            // Save client information
-            clients[clientId] = {
-                socket: localSocket,
-                connected: false,
-                bytesReceived: 0,
-                bytesSent: 0,
-                queuedData: null
-            };
-
-            // Correctly convert local port number
-            const parsedLocalPort = parseInt(localPort, 10);
-            if (isNaN(parsedLocalPort)) {
-                logger.error(`Invalid local port: ${localPort}`);
-                return;
-            }
-
-            localSocket.connect(parsedLocalPort, localHost, () => {
-                logger.info(`Connected to local service for client ${clientId}`);
-                clients[clientId].connected = true;
-
-                // Process queued data (if we received data before connecting)
-                if (clients[clientId].queuedData) {
-                    localSocket.write(clients[clientId].queuedData);
-                    clients[clientId].bytesReceived += clients[clientId].queuedData.length;
-                    delete clients[clientId].queuedData;
-                }
-            });
-
-            localSocket.on('data', data => {
-                // Forward data from local service to client
-                if (controlSocket && !controlSocket.destroyed) {
-                    sendMessage(controlSocket, {
-                        type: 'data',
-                        client_id: clientId,
-                        data: data.toString('base64')
-                    });
-
-                    clients[clientId].bytesSent += data.length;
-                }
-            });
-
-            localSocket.on('error', err => {
-                logger.error(`Local service error for client ${clientId}: ${err.message}`);
-                closeClientConnection(clientId);
-            });
-
-            localSocket.on('close', () => {
-                logger.info(`Local service closed connection for client ${clientId}`);
-                closeClientConnection(clientId);
-
-                // Notify server
-                if (controlSocket && !controlSocket.destroyed) {
-                    sendMessage(controlSocket, {
-                        type: 'client_disconnected',
-                        client_id: clientId
-                    });
-                }
-            });
-        }
-
-        function forwardDataToLocalService(clientId, dataBase64) {
-            if (!clients[clientId]) {
-                logger.error(`Received data for unknown client ${clientId}`);
-                return;
-            }
-
-            try {
-                const data = Buffer.from(dataBase64, 'base64');
-
-                if (clients[clientId].connected) {
-                    // Send data to local service
-                    clients[clientId].socket.write(data);
-                    clients[clientId].bytesReceived += data.length;
-
-                    if (process.env.DEBUG) {
-                        logger.debug(`Data forwarded to local service for client ${clientId} (${data.length} bytes)`);
-                    }
-                } else {
-                    // Queue data until connected
-                    if (!clients[clientId].queuedData) {
-                        clients[clientId].queuedData = data;
-                    } else {
-                        clients[clientId].queuedData = Buffer.concat([clients[clientId].queuedData, data]);
-                    }
-                    logger.debug(`Data queued for client ${clientId}, waiting for connection`);
-                }
-            } catch (err) {
-                logger.error(`Error forwarding data to local service for client ${clientId}: ${err}`);
-            }
-        }
-
-        function closeClientConnection(clientId) {
-            if (!clients[clientId]) return;
-
-            if (clients[clientId].socket && !clients[clientId].socket.destroyed) {
-                clients[clientId].socket.destroy();
-            }
-
-            if (clients[clientId].connected) {
-                logger.info(`Client ${clientId} disconnected. Transfer: ${formatBytes(clients[clientId].bytesSent)} sent, ${formatBytes(clients[clientId].bytesReceived)} received`);
-            }
-
-            delete clients[clientId];
-        }
+        // Create connection and set up handlers
+        const controlSocket = createControlConnection(tunnelName, localHost, localPort, tunnelState, tunnelOptions, resolve, reject);
     });
 }
 
-// New function to handle reconnection attempts
-async function attemptReconnection(tunnelName, localHost, localPort, tunnelPort, resolveOriginalPromise) {
-    if (reconnectionAttempts >= MAX_RECONNECTION_ATTEMPTS) {
-        logger.error(`Failed to reconnect after ${MAX_RECONNECTION_ATTEMPTS} attempts. Stopping tunnel.`);
+// Create a control connection to the server
+function createControlConnection(tunnelName, localHost, localPort, tunnelState, options, resolvePromise, rejectPromise) {
+    const auth = loadAuth().catch(err => {
+        logger.error('Failed to load authentication information: ' + err.message);
+        return null;
+    });
+
+    // Start with no auth to avoid blocking
+    const SERVER_HOST = auth?.server || 'localhost';
+    const SERVER_PORT = parseInt(auth?.port || '9012', 10);
+
+    const controlSocket = new net.Socket();
+    let pingInterval;
+    let heartbeatInterval;
+    let registered = false;
+    let tunnelPort;
+    let buffer = '';
+    let isConnected = false;
+    const clients = {}; // Track client connections
+    let lastHeartbeatResponse = Date.now();
+
+    controlSocket.on('data', data => {
+        try {
+            buffer += data.toString();
+
+            let newlineIndex;
+            while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+                const messageStr = buffer.substring(0, newlineIndex);
+                buffer = buffer.substring(newlineIndex + 1);
+
+                const message = decrypt(messageStr);
+                if (!message) continue;
+
+                processMessage(controlSocket, message);
+            }
+        } catch (err) {
+            logger.error('Data processing error: ' + err);
+            controlSocket.destroy();
+        }
+    });
+
+    controlSocket.on('error', err => {
+        logger.error('Control connection error: ' + err.message);
+        // Don't reject here, let the close handler handle reconnection
+    });
+
+    controlSocket.on('close', () => {
+        logger.info('Connection to tunnel server closed');
+        clearInterval(pingInterval);
+        clearInterval(heartbeatInterval);
+        isConnected = false;
+
+        if (tunnelState.isShuttingDown) {
+            logger.info('Tunnel is shutting down, not attempting to reconnect.');
+            return;
+        }
+
+        if (registered && options.autoReconnect) {
+            // Only attempt to reconnect if we were previously registered
+            tunnelState.isReconnecting = true;
+            attemptReconnection(tunnelName, localHost, localPort, tunnelPort, tunnelState, options, resolvePromise);
+        } else if (!registered) {
+            rejectPromise(new Error('Failed to establish initial connection to the server.'));
+        }
+    });
+
+    // Set a timeout for the connection
+    controlSocket.setTimeout(options.connectionTimeout);
+    controlSocket.on('timeout', () => {
+        const timeSinceLastHeartbeat = Date.now() - lastHeartbeatResponse;
+
+        if (timeSinceLastHeartbeat > options.heartbeatInterval * 2) {
+            logger.warning('Connection timeout. No response from server.');
+            controlSocket.destroy();
+        }
+    });
+
+    controlSocket.connect(SERVER_PORT, SERVER_HOST, () => {
+        logger.info('Connected to tunnel server');
+        isConnected = true;
+        tunnelState.reconnectionAttempts = 0; // Reset counter on successful connection
+
+        // Start ping interval
+        pingInterval = setInterval(() => {
+            // Check connection status before sending ping
+            if (!controlSocket.destroyed) {
+                sendMessage(controlSocket, {
+                    type: 'ping',
+                    time: Date.now()
+                });
+            }
+        }, 30000); // Ping every 30 seconds
+
+        // Start heartbeat interval - more frequent than ping
+        heartbeatInterval = setInterval(() => {
+            if (!controlSocket.destroyed) {
+                sendMessage(controlSocket, {
+                    type: 'heartbeat',
+                    time: Date.now(),
+                    tunnel_name: tunnelName,
+                    stats: {
+                        clientCount: Object.keys(clients).length
+                    }
+                });
+            }
+
+            // Check if we haven't received a heartbeat response in a while
+            const timeSinceLastHeartbeat = Date.now() - lastHeartbeatResponse;
+            if (timeSinceLastHeartbeat > options.heartbeatInterval * 3) {
+                logger.warning(`No heartbeat response received for ${Math.round(timeSinceLastHeartbeat/1000)}s. Connection may be stale.`);
+                controlSocket.destroy(); // Force reconnection
+            }
+        }, options.heartbeatInterval);
+    });
+
+    // Process incoming messages
+    function processMessage(socket, message) {
+        switch(message.type) {
+            case 'welcome':
+                logger.debug(`Received server welcome, client_id: ${message.client_id}`);
+
+                // Load auth info (should be available now)
+                auth.then(authData => {
+                    if (!authData) {
+                        socket.destroy();
+                        rejectPromise(new Error('Authentication information not found'));
+                        return;
+                    }
+
+                    // Login with token
+                    sendMessage(socket, {
+                        type: 'login',
+                        token: authData.token
+                    });
+                });
+                break;
+
+            case 'login_response':
+                if (message.success) {
+                    // Register tunnel
+                    sendMessage(socket, {
+                        type: 'register_tunnel',
+                        tunnel_name: tunnelName,
+                        description: `Local service at ${localHost}:${localPort}`
+                    });
+                } else {
+                    logger.error(`Authentication error: ${message.message}`);
+                    socket.destroy();
+                    rejectPromise(new Error(`Authentication error: ${message.message}`));
+                }
+                break;
+
+            case 'tunnel_registered':
+                registered = true;
+                tunnelState.reconnectionAttempts = 0; // Reset counter when successfully registered
+                tunnelPort = message.port;
+                logger.success(`Tunnel successfully registered! Your service is accessible at:`);
+                logger.success(`  ${SERVER_HOST}:${message.port}`);
+                resolvePromise({
+                    controlSocket,
+                    tunnelName,
+                    tunnelPort,
+                    isConnected: true,
+                    clients,
+                    options
+                });
+                break;
+
+            case 'error':
+                logger.error(`Server error: ${message.message}`);
+                if (!registered) {
+                    socket.destroy();
+                    rejectPromise(new Error(`Server error: ${message.message}`));
+                }
+                break;
+
+            case 'connection':
+                handleNewConnection(socket, message.client_id, message.remote_address, message.remote_port, tunnelName);
+                break;
+
+            case 'data':
+                forwardDataToLocalService(message.client_id, message.data);
+                break;
+
+            case 'client_disconnected':
+                closeClientConnection(message.client_id);
+                break;
+
+            case 'pong':
+            case 'heartbeat_ack':
+                // Update last heartbeat response time
+                lastHeartbeatResponse = Date.now();
+                break;
+
+            default:
+                logger.debug(`Unknown message type: ${message.type}`);
+                break;
+        }
+    }
+
+    // Handler functions for client connections
+    function handleNewConnection(controlSocket, clientId, remoteAddress, remotePort, tunnelName) {
+        logger.info(`New connection from ${remoteAddress}:${remotePort} (ID: ${clientId})`);
+
+        // Create connection to local service
+        const localSocket = new net.Socket();
+
+        // Save client information with queue for data
+        clients[clientId] = {
+            socket: localSocket,
+            connected: false,
+            bytesReceived: 0,
+            bytesSent: 0,
+            queuedData: [],
+            remoteAddress,
+            remotePort,
+            connectionTime: Date.now()
+        };
+
+        // Correctly convert local port number
+        const parsedLocalPort = parseInt(localPort, 10);
+        if (isNaN(parsedLocalPort)) {
+            logger.error(`Invalid local port: ${localPort}`);
+            return;
+        }
+
+        // Set timeout for local connection
+        localSocket.setTimeout(options.connectionTimeout);
+
+        localSocket.on('timeout', () => {
+            logger.warning(`Local connection timeout for client ${clientId}`);
+            localSocket.destroy();
+        });
+
+        localSocket.connect(parsedLocalPort, localHost, () => {
+            logger.info(`Connected to local service for client ${clientId}`);
+            clients[clientId].connected = true;
+
+            // Tell the server we're ready to receive data
+            sendMessage(controlSocket, {
+                type: 'client_ready',
+                client_id: clientId,
+                tunnel_name: tunnelName
+            });
+
+            // Process queued data if any
+            if (clients[clientId].queuedData.length > 0) {
+                logger.debug(`Processing ${clients[clientId].queuedData.length} queued data chunks for client ${clientId}`);
+
+                while (clients[clientId].queuedData.length > 0) {
+                    const data = clients[clientId].queuedData.shift();
+                    localSocket.write(data);
+                    clients[clientId].bytesReceived += data.length;
+                }
+            }
+        });
+
+        localSocket.on('data', data => {
+            // Forward data from local service to client
+            if (controlSocket && !controlSocket.destroyed) {
+                sendMessage(controlSocket, {
+                    type: 'data',
+                    client_id: clientId,
+                    data: data.toString('base64')
+                });
+
+                clients[clientId].bytesSent += data.length;
+            }
+        });
+
+        localSocket.on('error', err => {
+            logger.error(`Local service error for client ${clientId}: ${err.message}`);
+            closeClientConnection(clientId);
+        });
+
+        localSocket.on('close', () => {
+            logger.info(`Local service closed connection for client ${clientId}`);
+
+            // Log transfer stats
+            if (clients[clientId]) {
+                logger.info(`Data transfer for client ${clientId}: Sent ${formatBytes(clients[clientId].bytesSent)}, Received ${formatBytes(clients[clientId].bytesReceived)}`);
+            }
+
+            closeClientConnection(clientId);
+
+            // Notify server
+            if (controlSocket && !controlSocket.destroyed) {
+                sendMessage(controlSocket, {
+                    type: 'client_disconnected',
+                    client_id: clientId
+                });
+            }
+        });
+    }
+
+    function forwardDataToLocalService(clientId, dataBase64) {
+        if (!clients[clientId]) {
+            logger.error(`Received data for unknown client ${clientId}`);
+            return;
+        }
+
+        try {
+            const data = Buffer.from(dataBase64, 'base64');
+
+            if (clients[clientId].connected) {
+                // Send data to local service
+                clients[clientId].socket.write(data);
+                clients[clientId].bytesReceived += data.length;
+
+                if (process.env.DEBUG) {
+                    logger.debug(`Data forwarded to local service for client ${clientId} (${data.length} bytes)`);
+                }
+            } else {
+                // Queue data until connected
+                clients[clientId].queuedData.push(data);
+                logger.debug(`Data queued for client ${clientId} (${data.length} bytes), waiting for connection`);
+            }
+        } catch (err) {
+            logger.error(`Error forwarding data to local service for client ${clientId}: ${err}`);
+        }
+    }
+
+    function closeClientConnection(clientId) {
+        if (!clients[clientId]) return;
+
+        if (clients[clientId].socket && !clients[clientId].socket.destroyed) {
+            clients[clientId].socket.destroy();
+        }
+
+        if (clients[clientId].connected) {
+            logger.info(`Client ${clientId} disconnected. Transfer: ${formatBytes(clients[clientId].bytesSent)} sent, ${formatBytes(clients[clientId].bytesReceived)} received`);
+        }
+
+        delete clients[clientId];
+    }
+
+    return controlSocket;
+}
+
+// Function to handle reconnection attempts with exponential backoff
+async function attemptReconnection(tunnelName, localHost, localPort, tunnelPort, tunnelState, options, resolveOriginalPromise) {
+    if (tunnelState.reconnectionAttempts >= options.maxReconnectionAttempts) {
+        logger.error(`Failed to reconnect after ${options.maxReconnectionAttempts} attempts. Stopping tunnel.`);
 
         // Get tunnel data to find and stop the process
         const tunnelsData = await loadActiveTunnels();
@@ -657,36 +769,48 @@ async function attemptReconnection(tunnelName, localHost, localPort, tunnelPort,
             }
         }
 
-        resolveOriginalPromise(null);
+        tunnelState.isReconnecting = false;
         return;
     }
 
-    reconnectionAttempts++;
-    logger.warning(`Attempting to reconnect (${reconnectionAttempts}/${MAX_RECONNECTION_ATTEMPTS})...`);
+    tunnelState.reconnectionAttempts++;
+    logger.warning(`Attempting to reconnect (${tunnelState.reconnectionAttempts}/${options.maxReconnectionAttempts})...`);
 
     // Clear any existing reconnection timer
     if (reconnectionTimer) {
         clearTimeout(reconnectionTimer);
     }
 
-    // Wait for a moment before attempting to reconnect (exponential backoff)
-    const delay = Math.min(1000 * Math.pow(2, reconnectionAttempts - 1), 30000);
+    // Exponential backoff with jitter
+    const delay = Math.min(
+        RECONNECTION_BASE_DELAY * Math.pow(2, tunnelState.reconnectionAttempts - 1) * (0.5 + Math.random()),
+        30000 // Cap at 30 seconds
+    );
+
+    logger.info(`Reconnecting in ${Math.round(delay/1000)} seconds...`);
+
     reconnectionTimer = setTimeout(async () => {
         try {
             logger.info(`Reconnecting to tunnel ${tunnelName}...`);
-            const newTunnel = await createTunnelClient(tunnelName, localHost, localPort);
 
-            if (newTunnel && newTunnel.isConnected) {
-                logger.success(`Successfully reconnected to tunnel ${tunnelName}!`);
-                resolveOriginalPromise(newTunnel);
-            } else {
-                // If reconnection failed but didn't throw an error, attempt again
-                attemptReconnection(tunnelName, localHost, localPort, tunnelPort, resolveOriginalPromise);
-            }
+            // Create new control connection
+            const controlSocket = createControlConnection(
+                tunnelName,
+                localHost,
+                localPort,
+                tunnelState,
+                options,
+                resolveOriginalPromise,
+                (err) => {
+                    logger.error(`Reconnection attempt failed: ${err.message}`);
+                    // Try again with the next attempt
+                    attemptReconnection(tunnelName, localHost, localPort, tunnelPort, tunnelState, options, resolveOriginalPromise);
+                }
+            );
         } catch (err) {
-            logger.error(`Reconnection attempt failed: ${err.message}`);
+            logger.error(`Error during reconnection attempt: ${err.message}`);
             // Try again
-            attemptReconnection(tunnelName, localHost, localPort, tunnelPort, resolveOriginalPromise);
+            attemptReconnection(tunnelName, localHost, localPort, tunnelPort, tunnelState, options, resolveOriginalPromise);
         }
     }, delay);
 }
@@ -709,18 +833,55 @@ async function runTunnel(argv) {
 
         logger.info(`Starting tunnel ${argv.name} (${argv.host || 'localhost'}:${localPort})`);
 
-        const tunnel = await createTunnelClient(argv.name, argv.host || 'localhost', localPort);
+        const options = {
+            autoReconnect: argv.autoReconnect !== false,
+            maxReconnectionAttempts: argv.maxRetries || MAX_RECONNECTION_ATTEMPTS,
+            connectionTimeout: argv.timeout || CONNECTION_TIMEOUT,
+            heartbeatInterval: argv.heartbeatInterval || HEARTBEAT_INTERVAL
+        };
+
+        const tunnel = await createTunnelClient(argv.name, argv.host || 'localhost', localPort, options);
 
         if (tunnel) {
             logger.success(`Tunnel successfully created!`);
 
-            // Set up connection health check
-            const healthCheck = setInterval(async () => {
+            // Track stats
+            let lastStats = {
+                clientCount: 0,
+                bytesSent: 0,
+                bytesReceived: 0
+            };
+
+            // Set up connection health check and stats
+            const healthCheck = setInterval(() => {
                 if (!tunnel.controlSocket || tunnel.controlSocket.destroyed) {
                     logger.warning('Tunnel connection appears to be down.');
                     clearInterval(healthCheck);
+                    return;
+                }
 
-                    // Connection already closed, reconnection should be handled by the close event
+                // Calculate current stats
+                let totalBytesSent = 0;
+                let totalBytesReceived = 0;
+                const clientCount = Object.keys(tunnel.clients).length;
+
+                Object.values(tunnel.clients).forEach(client => {
+                    totalBytesSent += client.bytesSent || 0;
+                    totalBytesReceived += client.bytesReceived || 0;
+                });
+
+                // Log stats if changed significantly
+                if (clientCount !== lastStats.clientCount ||
+                    Math.abs(totalBytesSent - lastStats.bytesSent) > 1024*1024 ||
+                    Math.abs(totalBytesReceived - lastStats.bytesReceived) > 1024*1024) {
+
+                    logger.info(`Tunnel stats: ${clientCount} active clients, ${formatBytes(totalBytesSent)} sent, ${formatBytes(totalBytesReceived)} received`);
+
+                    lastStats = {
+                        clientCount,
+                        bytesSent: totalBytesSent,
+                        bytesReceived: totalBytesReceived
+                    };
                 }
             }, 60000); // Check every minute
 
@@ -825,12 +986,28 @@ async function startTunnelInBackground(tunnelInfo) {
                 return;
             }
 
-            // Start tunnel client in a separate process
-            const childProcess = child_process.spawn(process.execPath, [__filename, 'run',
+            // Build the command-line arguments
+            const args = [__filename, 'run',
                 '--name', tunnelInfo.name,
                 '--host', tunnelInfo.localHost,
                 '--port', localPort.toString()
-            ], {
+            ];
+
+            // Add additional options if specified
+            if (tunnelInfo.autoReconnect === false) {
+                args.push('--no-auto-reconnect');
+            }
+
+            if (tunnelInfo.maxRetries) {
+                args.push('--max-retries', tunnelInfo.maxRetries.toString());
+            }
+
+            if (tunnelInfo.debug) {
+                args.push('--debug');
+            }
+
+            // Start tunnel client in a separate process
+            const childProcess = child_process.spawn(process.execPath, args, {
                 detached: true,
                 stdio: 'ignore'
             });
@@ -1070,7 +1247,6 @@ async function changePassword() {
 // Command: Create tunnel
 async function createTunnel(argv) {
     try {
-
         const answers = await inquirer.prompt([
             {
                 type: 'input',
@@ -1197,9 +1373,10 @@ async function listTunnels() {
                     colors.title('Description'),
                     colors.title('Sent'),
                     colors.title('Received'),
+                    colors.title('Connections'),
                     colors.title('Last Activity')
                 ],
-                colWidths: [5, 25, 10, 45, 15, 15, 30]
+                colWidths: [5, 20, 10, 30, 12, 12, 12, 25]
             });
 
             const tunnelsData = await loadActiveTunnels();
@@ -1218,6 +1395,7 @@ async function listTunnels() {
                     tunnel.description || '-',
                     formatBytes(tunnel.bytes_sent || 0),
                     formatBytes(tunnel.bytes_received || 0),
+                    tunnel.active_connections || 0,
                     tunnel.lastActiveAt ? new Date(tunnel.lastActiveAt).toLocaleString() : '-'
                 ]);
             });
@@ -1446,9 +1624,10 @@ async function showTunnelStatus() {
                 colors.title('Out/Port'),
                 colors.title('Sent'),
                 colors.title('Received'),
+                colors.title('Connections'),
                 colors.title('Status')
             ],
-            colWidths: [25, 10, 30, 15, 15, 15, 15]
+            colWidths: [20, 10, 30, 10, 15, 15, 15, 15]
         });
 
         // Process tunnel data from server
@@ -1473,6 +1652,7 @@ async function showTunnelStatus() {
             const serverTunnelInfo = tunnelInfoMap[tunnel.name] || {};
             const bytesSent = serverTunnelInfo.bytes_sent || 0;
             const bytesReceived = serverTunnelInfo.bytes_received || 0;
+            const activeConnections = serverTunnelInfo.active_connections || 0;
 
             table.push([
                 colors.highlight(tunnel.name),
@@ -1481,6 +1661,7 @@ async function showTunnelStatus() {
                 serverPort,
                 formatBytes(bytesSent),
                 formatBytes(bytesReceived),
+                activeConnections,
                 status
             ]);
         }
@@ -1567,7 +1748,7 @@ async function showTunnelDetails() {
             { 'Created': new Date(selectedTunnel.createdAt).toLocaleString() },
             { 'Last Activity': selectedTunnel.lastActiveAt ? new Date(selectedTunnel.lastActiveAt).toLocaleString() : '-' },
             { 'Owner': selectedTunnel.owner },
-            { 'Active Clients': selectedTunnel.clientCount || '0' }
+            { 'Active Clients': selectedTunnel.active_connections || '0' }
         );
 
         if (tunnelInfo.localHost && tunnelInfo.localPort) {
@@ -1753,14 +1934,38 @@ async function main() {
                     describe: 'Automatically reconnect if connection is lost',
                     type: 'boolean',
                     default: true
+                })
+                .option('max-retries', {
+                    alias: 'mr',
+                    describe: 'Maximum reconnection attempts',
+                    type: 'number',
+                    default: MAX_RECONNECTION_ATTEMPTS
+                })
+                .option('timeout', {
+                    alias: 't',
+                    describe: 'Connection timeout in milliseconds',
+                    type: 'number',
+                    default: CONNECTION_TIMEOUT
+                })
+                .option('debug', {
+                    alias: 'd',
+                    describe: 'Enable debug logging',
+                    type: 'boolean',
+                    default: false
                 });
         })
         .help()
         .alias('help', 'h')
-        .version()
+        .version('1.2.0')
         .alias('version', 'v')
         .epilog('VTunnel Client - Secure Tunnel Routing Client')
         .argv;
+
+    // Apply debug flag
+    if (argv.debug) {
+        process.env.DEBUG = 'true';
+        logger.debug('Debug logging enabled');
+    }
 
     const command = argv._[0];
     const subCommand = argv._[1]; // For nested commands like 'api start'
