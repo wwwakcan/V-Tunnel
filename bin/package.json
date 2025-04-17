@@ -1,5 +1,0 @@
-{
-  "name": "vtunnel-proxy",
-  "version": "1.0.0",
-  "description": "Dynamic proxy server with automatic SSL certificate management"
-}
