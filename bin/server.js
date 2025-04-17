@@ -112,11 +112,11 @@ function startBackgroundProcess() {
         // Check if running from npm global install
         if (process.env._ && process.env._.includes('npm')) {
             // When run via npm global install
-            execCommand = 'v-tunnel';
+            execCommand = 'vtunnel';
             execArgs = process.argv.slice(2).filter(arg => arg !== 'background' && arg !== 'start');
         } else if (__filename.includes('node_modules')) {
             // When run from global install directly
-            execCommand = 'v-tunnel';
+            execCommand = 'vtunnel';
             execArgs = process.argv.slice(2).filter(arg => arg !== 'background' && arg !== 'start');
         } else {
             // When run from local project
@@ -127,8 +127,8 @@ function startBackgroundProcess() {
         }
 
         // Add stats flag if not present
-        if (!execArgs.includes('background start')) {
-            execArgs.push('background start');
+        if (!execArgs.includes('server')) {
+            execArgs.push('server');
         }
 
         // Log the command for debugging
@@ -141,7 +141,7 @@ function startBackgroundProcess() {
         const spawnOptions = {
             detached: true,
             stdio: ['ignore', out, err],
-            shell: process.platform === 'win32' // Use shell on Windows
+            shell: process.platform === 'win32'
         };
 
         const child = spawn(execCommand, execArgs, spawnOptions);
@@ -159,7 +159,7 @@ function startBackgroundProcess() {
 
         logger.success(`V-Tunnel started in background with PID ${child.pid}`);
         logger.info(`Logs available at: ${path.join(CONFIG_DIR, 'vtunnel.log')}`);
-        logger.info(`To stop the background process, run: ${execCommand === 'v-tunnel' ? 'v-tunnel' : 'node server.js'} background stop`);
+        logger.info(`To stop the background process, run: vtunnel server background stop`);
 
         return true;
     } catch (err) {
