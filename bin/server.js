@@ -109,11 +109,14 @@ function startBackgroundProcess() {
             }
         }
 
-        // Get script path
-        const scriptPath = process.argv[1];
+        // Determine if running from global installation
+        const isGlobalInstall = __dirname.includes('node_modules');
 
-        // Spawn detached process without the "background start" args
-        const args = process.argv.slice(2).filter(arg => arg !== 'background' && arg !== 'start');
+        // Choose appropriate command and arguments based on installation type
+        const command = isGlobalInstall ? 'v-tunnel' : process.execPath;
+        const args = isGlobalInstall
+            ? process.argv.slice(2).filter(arg => arg !== 'background' && arg !== 'start')
+            : [process.argv[1], ...process.argv.slice(2).filter(arg => arg !== 'background' && arg !== 'start')];
 
         // Add stats flag to show periodic stats
         if (!args.includes('--stats')) {
@@ -123,7 +126,7 @@ function startBackgroundProcess() {
         const out = fs.openSync(path.join(CONFIG_DIR, 'vtunnel.log'), 'a');
         const err = fs.openSync(path.join(CONFIG_DIR, 'vtunnel-error.log'), 'a');
 
-        const child = spawn(process.execPath, [scriptPath, ...args], {
+        const child = spawn(command, args, {
             detached: true,
             stdio: ['ignore', out, err]
         });
@@ -135,7 +138,7 @@ function startBackgroundProcess() {
         const bgData = {
             pid: child.pid,
             startTime: new Date().toISOString(),
-            command: `${scriptPath} ${args.join(' ')}`,
+            command: `${command} ${args.join(' ')}`,
             logFile: path.join(CONFIG_DIR, 'vtunnel.log'),
             errorLogFile: path.join(CONFIG_DIR, 'vtunnel-error.log')
         };
@@ -144,7 +147,7 @@ function startBackgroundProcess() {
 
         logger.success(`V-Tunnel started in background with PID ${child.pid}`);
         logger.info(`Logs available at: ${path.join(CONFIG_DIR, 'vtunnel.log')}`);
-        logger.info(`To stop the background process, run: node ${scriptPath} background stop`);
+        logger.info(`To stop the background process, run: ${isGlobalInstall ? 'v-tunnel' : 'node server.js'} background stop`);
 
         return true;
     } catch (err) {
